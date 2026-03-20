@@ -1,94 +1,111 @@
 import gradio as gr
 import folium
-import numpy as np
 import networkx as nx
 from scipy.spatial.distance import pdist, squareform
 import json
+import html
 
-# --- 1. Peta Interaktif untuk Memilih Lokasi (JavaScript & Leaflet) ---
-# Trik ini menggunakan HTML & JS untuk menangkap klik di browser user.
-map_picker_html = """
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<div id="map_picker" style="height: 500px; border-radius: 10px; border: 2px solid #ddd;"></div>
-<script>
-    // Inisialisasi peta (pusat di area Bandung/Padalarang sebagai contoh)
-    var mapPicker = L.map('map_picker').setView([-6.8400, 107.4780], 13);
-    
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(mapPicker);
-
-    var clickedMarkers = [];
-    var currentCoords = [];
-
-    // Fungsi saat peta diklik
-    function onMapClick(e) {
-        var lat = e.latlng.lat;
-        var lng = e.latlng.lng;
-        var id = clickedMarkers.length + 1;
-
-        // Tambah marker ke peta
-        var marker = L.marker([lat, lng]).addTo(mapPicker)
-            .bindPopup("Lokasi " + id).openPopup();
+# --- 1. HTML Peta Leaflet (Dibungkus Iframe utuh) ---
+map_html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>body, html { margin: 0; padding: 0; height: 100%; }</style>
+</head>
+<body>
+    <div id="map" style="width: 100vw; height: 100vh;"></div>
+    <script>
+        // View awal langsung diset ke koordinat Padalarang
+        var map = L.map('map').setView([-6.8400, 107.4780], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
         
-        clickedMarkers.push(marker);
-        currentCoords.push([lat, lng]);
+        var coords = [];
+        var markers = [];
+        
+        map.on('click', function(e) {
+            var lat = e.latlng.lat;
+            var lng = e.latlng.lng;
+            var marker = L.marker([lat, lng]).addTo(map)
+                .bindPopup("Destinasi " + (coords.length + 1)).openPopup();
+            markers.push(marker);
+            coords.push([lat, lng]);
+            
+            // Kirim data koordinat ke aplikasi Gradio (parent window)
+            window.parent.postMessage({type: 'map_click', coords: JSON.stringify(coords)}, '*');
+        });
 
-        // Masukkan koordinat ke hidden textbox Gradio agar bisa dibaca Python
-        // Kita cari elemen textarea Gradio yang kita set sebagai input nanti
-        var gradioInput = document.querySelector('#latlng_input textarea');
-        if (gradioInput) {
-            gradioInput.value = JSON.stringify(currentCoords);
-            // Trigger event input agar Gradio tahu isinya berubah
-            gradioInput.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    }
-
-    mapPicker.on('click', onMapClick);
-
-    // Fungsi untuk reset map (dipanggil via JS Gradio)
-    window.resetMapPicker = function() {
-        for(var i = 0; i < clickedMarkers.length; i++){
-            mapPicker.removeLayer(clickedMarkers[i]);
-        }
-        clickedMarkers = [];
-        currentCoords = [];
-        var gradioInput = document.querySelector('#latlng_input textarea');
-        if(gradioInput) { gradioInput.value = ""; }
-    }
-</script>
+        // Listener untuk membersihkan peta jika tombol reset di Gradio ditekan
+        window.addEventListener('message', function(e) {
+            if(e.data === 'reset_map') {
+                markers.forEach(m => map.removeLayer(m));
+                markers = [];
+                coords = [];
+            }
+        });
+    </script>
+</body>
+</html>
 """
 
-# --- 2. Fungsi Logika Python (TSP Solver & Folium Renderer) ---
+# Escape HTML agar tidak merusak formatting string iframe bawaan Gradio
+safe_html = html.escape(map_html)
+iframe_html = f'<iframe id="leaflet_iframe" srcdoc="{safe_html}" width="100%" height="450px" style="border: 1px solid #ddd; border-radius: 8px;"></iframe>'
+
+# --- 2. JS Listener & Bridge Komunikasi UI ---
+listener_js = """
+function() {
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'map_click') {
+            // Targetkan elemen input text Gradio lewat ID
+            var container = document.getElementById('raw_coords');
+            if (container) {
+                var textarea = container.querySelector('textarea');
+                if (textarea) {
+                    textarea.value = event.data.coords;
+                    // Trigger 'input' agar sistem Gradio sadar ada perubahan teks
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            }
+        }
+    });
+}
+"""
+
+reset_js = """
+function() {
+    var iframe = document.getElementById('leaflet_iframe');
+    if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage('reset_map', '*');
+    }
+    return ""; // Mengosongkan textbox Gradio
+}
+"""
+
+# --- 3. Fungsi Logika Python (TSP Solver) ---
 def solve_efficient_route(coords_json):
     try:
-        if not coords_json or coords_json == "" or coords_json == "[]":
+        if not coords_json or coords_json.strip() == "" or coords_json == "[]":
             return None, "⚠️ Silakan klik minimal 2 lokasi pada peta di atas terlebih dahulu."
         
-        # Parsing koordinat dari JS
         coords = json.loads(coords_json)
         n = len(coords)
         
         if n < 2:
             return None, "⚠️ Pilih minimal 2 titik lokasi."
             
-        # Penamaan otomatis (Lokasi 1, 2, dst. Titik 1 dianggap Start)
         names = [f"Lokasi {i+1}" for i in range(n)]
         names[0] += " (START)"
         
-        # Hitung matriks jarak (Euclidean sederhana)
+        # Kalkulasi matriks jarak dan pembuatan rute aproksimasi
         dist_matrix = squareform(pdist(coords))
-        
-        # Buat graf dan selesaikan TSP (Linear Route, tidak kembali ke awal)
         G = nx.from_numpy_array(dist_matrix)
-        # Aproksimasi TSP, cycle=False agar rute linear
         route_indices = nx.approximation.traveling_salesman_problem(G, cycle=False)
         
-        # --- Membuat Peta Output dengan Folium ---
-        # Titik tengah peta diambil dari lokasi pertama
         m = folium.Map(location=coords[route_indices[0]], zoom_start=14)
-        
         path_coords = []
         route_names = []
         
@@ -96,75 +113,51 @@ def solve_efficient_route(coords_json):
             lat_lon = coords[idx]
             path_coords.append(lat_lon)
             
-            # Buat teks urutan (Start -> 2 -> 3 -> End)
             if step == 0: order_txt = "🚀 START"
-            elif step == len(route_indices)-1: order_txt = f"🏁 FINISH (Ke-{step+1})"
+            elif step == len(route_indices)-1: order_txt = f"🏁 FINISH"
             else: order_txt = f"📍 Urutan Ke-{step+1}"
             
             route_names.append(f"{step+1}. Lokasi {idx+1}")
-            
-            # Warna marker
             color = "green" if step == 0 else "red" if step == len(route_indices)-1 else "blue"
             
             folium.Marker(
                 location=lat_lon,
-                popup=f"<b>{order_txt}</b><br>Asal Klik: Lokasi {idx+1}",
+                popup=f"<b>{order_txt}</b>",
                 icon=folium.Icon(color=color, icon="info-sign"),
-                tooltip=f"{step+1}. Lokasi {idx+1}"
+                tooltip=f"Tujuan {step+1}"
             ).add_to(m)
             
-        # Gambar garis jalur
-        folium.PolyLine(
-            path_coords, 
-            color="#2ecc71", 
-            weight=5, 
-            opacity=0.8,
-            dash_array="10"
-        ).add_to(m)
+        folium.PolyLine(path_coords, color="#2ecc71", weight=5, opacity=0.8, dash_array="10").add_to(m)
         
-        map_html = m._repr_html_()
-        route_text = " ➡️ ".join(route_names)
-        
-        return map_html, f"✅ Rute Optimal Ditemukan:\n{route_text}\n\nTotal destinasi: {n} rumah."
+        return m._repr_html_(), f"✅ Rute Optimal:\n{' ➡️ '.join(route_names)}"
         
     except Exception as e:
         return None, f"❌ Terjadi kesalahan: {str(e)}"
 
-# --- 3. Antarmuka Gradio (UI/UX) ---
-with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald"), css=".gradio-container {background-color: #f9f9f9}") as app:
+# --- 4. Antarmuka Gradio ---
+with gr.Blocks(js=listener_js, theme=gr.themes.Default(primary_hue="emerald")) as app:
     gr.Markdown("# 🌙 Peta Silaturahmi Lebaran Efisien")
-    gr.Markdown("Selamat Lebaran! Agar salam-salaman besok efektif dan tidak boros bensin, mari atur rutenya. Gunakan peta gratis di bawah untuk memilih rumah kerabat.")
     
     with gr.Row():
-        # Kolom Kiri: Input (Map Picker)
         with gr.Column(scale=1):
-            gr.Markdown("### 1️⃣ Pilih Lokasi di Peta\nKlik pada peta di bawah untuk menandai rumah yang ingin dikunjungi. Titik **pertama** yang Anda klik akan dianggap sebagai **titik START (Rumah Anda)**.")
+            gr.Markdown("### 1️⃣ Pilih Lokasi di Peta")
+            gr.HTML(iframe_html)
             
-            # Komponen HTML untuk menampilkan map picker Leaflet
-            gr.HTML(map_picker_html)
-            
-            # Hidden textbox untuk komunikasi JS -> Python (Harus diberi elem_id agar JS bisa menemukan)
-            latlng_input = gr.Textbox(label="Koordinat Terpilih (JSON)", visible=False, elem_id="latlng_input")
+            # Textbox diset menjadi readonly, tetapi sengaja di-expose agar user sadar ada data JSON yang masuk
+            latlng_input = gr.Textbox(label="Data Kumpulan Koordinat", interactive=False, elem_id="raw_coords")
             
             with gr.Row():
                 clear_btn = gr.Button("🗑️ Reset Map", variant="secondary")
                 submit_btn = gr.Button("🚀 Hitung Rute Tercepat", variant="primary")
                 
-            # Gunakan JavaScript sederhana di Gradio untuk memanggil fungsi reset di window
-            clear_btn.click(None, None, None, js="() => { window.resetMapPicker(); }")
-
-        # Kolom Kanan: Output (Hasil Rute)
         with gr.Column(scale=1):
             gr.Markdown("### 2️⃣ Hasil Rute Optimal")
             output_map = gr.HTML(label="Peta Rute")
             output_text = gr.Textbox(label="Urutan Kunjungan", lines=4)
 
-    # Logika tombol submit
-    submit_btn.click(
-        fn=solve_efficient_route,
-        inputs=latlng_input,
-        outputs=[output_map, output_text]
-    )
+    # Event Actions
+    clear_btn.click(fn=None, inputs=None, outputs=latlng_input, js=reset_js)
+    submit_btn.click(fn=solve_efficient_route, inputs=latlng_input, outputs=[output_map, output_text])
 
 if __name__ == "__main__":
     app.launch()
