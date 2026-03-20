@@ -12,10 +12,8 @@ map_html = """
 <head>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
     <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
     <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
-    
     <style>body, html { margin: 0; padding: 0; height: 100%; }</style>
 </head>
 <body>
@@ -27,12 +25,10 @@ map_html = """
             attribution: '&copy; OpenStreetMap'
         }).addTo(map);
 
-        // Menambahkan kotak pencarian (Search Box)
         L.Control.geocoder({
             defaultMarkGeocode: false,
             placeholder: "Cari lokasi rumah..."
         }).on('markgeocode', function(e) {
-            // Saat hasil pencarian diklik, pindahkan kamera peta ke lokasi tersebut
             map.setView(e.geocode.center, 16);
         }).addTo(map);
         
@@ -47,7 +43,7 @@ map_html = """
             markers.push(marker);
             coords.push([lat, lng]);
             
-            // Mengirim koordinat ke Gradio
+            // Mengirim koordinat ke Gradio parent window
             window.parent.postMessage({type: 'map_click', coords: JSON.stringify(coords)}, '*');
         });
 
@@ -68,15 +64,19 @@ map_html = """
 safe_html = html.escape(map_html)
 iframe_html = f'<iframe id="leaflet_iframe" srcdoc="{safe_html}" width="100%" height="450px" style="border: 1px solid #ddd; border-radius: 8px;"></iframe>'
 
-# --- 2. Komunikasi Javascript ---
+# --- 2. Komunikasi Javascript (DIPERBAIKI) ---
 listener_js = """
 function() {
     window.addEventListener('message', function(event) {
         if (event.data && event.data.type === 'map_click') {
-            // Memastikan data masuk ke Textbox Gradio
+            // Memastikan data masuk ke Textarea Gradio dengan Native Setter
             var elem = document.querySelector('#raw_coords textarea');
             if (elem) {
-                elem.value = event.data.coords;
+                // Trik ini wajib dipakai di Gradio/Svelte agar state-nya sadar ada perubahan
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+                nativeInputValueSetter.call(elem, event.data.coords);
+                
+                // Memicu event input manual
                 elem.dispatchEvent(new Event('input', { bubbles: true }));
             }
         }
@@ -109,7 +109,6 @@ def solve_efficient_route(coords_json):
         names = [f"Lokasi {i+1}" for i in range(n)]
         names[0] += " (START)"
         
-        # Penanganan aman jika titik hanya 2
         if n == 2:
             route_indices = [0, 1]
         else:
@@ -155,8 +154,8 @@ with gr.Blocks(js=listener_js, theme=gr.themes.Default(primary_hue="emerald")) a
             gr.Markdown("### 1️⃣ Cari & Pilih Lokasi di Peta\nGunakan ikon kaca pembesar (🔍) untuk mencari alamat, lalu **klik** lokasi tersebut untuk menandainya.")
             gr.HTML(iframe_html)
             
-            # Textbox dimunculkan agar status data terlihat jelas saat debugging
-            latlng_input = gr.Textbox(label="Raw Data JSON (Terisi Otomatis)", interactive=False, elem_id="raw_coords")
+            # Wajib ditambahkan lines=2 agar dirender sebagai <textarea> sesuai dengan selektor JS kita
+            latlng_input = gr.Textbox(lines=2, label="Raw Data JSON (Terisi Otomatis)", interactive=False, elem_id="raw_coords")
             
             with gr.Row():
                 clear_btn = gr.Button("🗑️ Reset Map", variant="secondary")
