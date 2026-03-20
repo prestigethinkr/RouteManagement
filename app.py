@@ -187,7 +187,7 @@ def solve_efficient_route(coords_json):
 
 # --- 4. Antarmuka UI Gradio ---
 with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald")) as app:
-    gr.Markdown("# 🌙 Peta Silaturahmi Lebaran Efisien")
+    gr.Markdown("# 🌙 Peta Silaturahmi Lebaran Efisien by ALIF TOWEW (menggunakan TSP)")
     
     with gr.Row():
         with gr.Column(scale=1):
