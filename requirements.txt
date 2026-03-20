@@ -2,4 +2,4 @@ gradio
 folium
 networkx
 scipy
-numpy
+requests
