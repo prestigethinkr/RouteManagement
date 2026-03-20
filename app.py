@@ -5,7 +5,7 @@ from scipy.spatial.distance import pdist, squareform
 import json
 import html
 
-# --- 1. HTML Peta Leaflet + Geocoder (Search) ---
+# --- 1. HTML Peta Leaflet + Geocoder (Sistem Penyimpanan Internal) ---
 map_html = """
 <!DOCTYPE html>
 <html>
@@ -19,7 +19,6 @@ map_html = """
 <body>
     <div id="map" style="width: 100vw; height: 100vh;"></div>
     <script>
-        // Titik awal peta
         var map = L.map('map').setView([-6.8400, 107.4780], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap'
@@ -32,30 +31,30 @@ map_html = """
             map.setView(e.geocode.center, 16);
         }).addTo(map);
         
-        var coords = [];
-        var markers = [];
+        // Variabel internal untuk menyimpan titik tanpa perlu lapor ke Gradio setiap saat
+        window.userCoords = [];
+        window.markers = [];
         
         map.on('click', function(e) {
             var lat = e.latlng.lat;
             var lng = e.latlng.lng;
             var marker = L.marker([lat, lng]).addTo(map)
-                .bindPopup("Destinasi " + (coords.length + 1)).openPopup();
-            markers.push(marker);
-            coords.push([lat, lng]);
-            
-            // Mengirim koordinat ke Gradio parent window
-            window.parent.postMessage({type: 'map_click', coords: JSON.stringify(coords)}, '*');
+                .bindPopup("Destinasi " + (window.userCoords.length + 1)).openPopup();
+            window.markers.push(marker);
+            window.userCoords.push([lat, lng]);
         });
 
-        // Reset peta saat ditekan dari UI Gradio
-        window.addEventListener('message', function(e) {
-            if(e.data === 'reset_map') {
-                markers.forEach(m => map.removeLayer(m));
-                markers = [];
-                coords = [];
-                window.parent.postMessage({type: 'map_click', coords: '[]'}, '*');
-            }
-        });
+        // Jembatan: Fungsi ini akan dipanggil secara paksa oleh tombol Gradio nanti
+        window.getCoords = function() {
+            return JSON.stringify(window.userCoords);
+        };
+
+        // Jembatan: Fungsi untuk reset peta
+        window.resetMap = function() {
+            window.markers.forEach(m => map.removeLayer(m));
+            window.markers = [];
+            window.userCoords = [];
+        };
     </script>
 </body>
 </html>
@@ -64,37 +63,29 @@ map_html = """
 safe_html = html.escape(map_html)
 iframe_html = f'<iframe id="leaflet_iframe" srcdoc="{safe_html}" width="100%" height="450px" style="border: 1px solid #ddd; border-radius: 8px;"></iframe>'
 
-# --- 2. Komunikasi Javascript (DIPERBAIKI) ---
-listener_js = """
-function() {
-    window.addEventListener('message', function(event) {
-        if (event.data && event.data.type === 'map_click') {
-            // Memastikan data masuk ke Textarea Gradio dengan Native Setter
-            var elem = document.querySelector('#raw_coords textarea');
-            if (elem) {
-                // Trik ini wajib dipakai di Gradio/Svelte agar state-nya sadar ada perubahan
-                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-                nativeInputValueSetter.call(elem, event.data.coords);
-                
-                // Memicu event input manual
-                elem.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-        }
-    });
+# --- 2. Javascript Interceptor untuk Tombol Gradio ---
+# Skrip ini akan mencegat klik tombol, menyusup ke iframe, mengambil data, lalu menyerahkannya ke Python
+js_get_coords = """
+function(dummy) {
+    var iframe = document.getElementById('leaflet_iframe');
+    if (iframe && iframe.contentWindow && iframe.contentWindow.getCoords) {
+        return iframe.contentWindow.getCoords();
+    }
+    return "[]";
 }
 """
 
-reset_js = """
+js_reset_map = """
 function() {
     var iframe = document.getElementById('leaflet_iframe');
-    if (iframe && iframe.contentWindow) {
-        iframe.contentWindow.postMessage('reset_map', '*');
+    if (iframe && iframe.contentWindow && iframe.contentWindow.resetMap) {
+        iframe.contentWindow.resetMap();
     }
     return "";
 }
 """
 
-# --- 3. Kalkulasi TSP ---
+# --- 3. Fungsi Python (Kalkulasi Graf TSP) ---
 def solve_efficient_route(coords_json):
     try:
         if not coords_json or coords_json.strip() == "" or coords_json == "[]":
@@ -109,6 +100,7 @@ def solve_efficient_route(coords_json):
         names = [f"Lokasi {i+1}" for i in range(n)]
         names[0] += " (START)"
         
+        # Eksekusi algoritma optimasi rute
         if n == 2:
             route_indices = [0, 1]
         else:
@@ -145,17 +137,17 @@ def solve_efficient_route(coords_json):
     except Exception as e:
         return None, f"❌ Terjadi kesalahan proses: {str(e)}"
 
-# --- 4. UI Gradio ---
-with gr.Blocks(js=listener_js, theme=gr.themes.Default(primary_hue="emerald")) as app:
+# --- 4. Antarmuka UI ---
+with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald")) as app:
     gr.Markdown("# 🌙 Peta Silaturahmi Lebaran Efisien")
     
     with gr.Row():
         with gr.Column(scale=1):
-            gr.Markdown("### 1️⃣ Cari & Pilih Lokasi di Peta\nGunakan ikon kaca pembesar (🔍) untuk mencari alamat, lalu **klik** lokasi tersebut untuk menandainya.")
+            gr.Markdown("### 1️⃣ Cari & Pilih Lokasi di Peta\nGunakan ikon kaca pembesar (🔍) untuk mencari alamat, lalu **klik** lokasi tersebut.")
             gr.HTML(iframe_html)
             
-            # Wajib ditambahkan lines=2 agar dirender sebagai <textarea> sesuai dengan selektor JS kita
-            latlng_input = gr.Textbox(lines=2, label="Raw Data JSON (Terisi Otomatis)", interactive=False, elem_id="raw_coords")
+            # Kita gunakan Textbox tersembunyi murni sebagai "pipa" aliran data dari JS ke Python
+            dummy_input = gr.Textbox(visible=False)
             
             with gr.Row():
                 clear_btn = gr.Button("🗑️ Reset Map", variant="secondary")
@@ -166,9 +158,20 @@ with gr.Blocks(js=listener_js, theme=gr.themes.Default(primary_hue="emerald")) a
             output_map = gr.HTML(label="Peta Rute")
             output_text = gr.Textbox(label="Urutan Kunjungan", lines=4)
 
-    # Event Binding
-    clear_btn.click(fn=None, inputs=None, outputs=latlng_input, js=reset_js)
-    submit_btn.click(fn=solve_efficient_route, inputs=latlng_input, outputs=[output_map, output_text])
+    # Aksi Tombol: Tombol akan menjalankan JS dulu, hasilnya baru disuapkan ke Python
+    submit_btn.click(
+        fn=solve_efficient_route, 
+        inputs=dummy_input, 
+        outputs=[output_map, output_text], 
+        js=js_get_coords
+    )
+    
+    clear_btn.click(
+        fn=None, 
+        inputs=None, 
+        outputs=dummy_input, 
+        js=js_reset_map
+    )
 
 if __name__ == "__main__":
     app.launch()
