@@ -4,6 +4,7 @@ import networkx as nx
 from scipy.spatial.distance import pdist, squareform
 import json
 import html
+import requests
 
 # --- 1. HTML Peta Leaflet + Geocoder (Sistem Penyimpanan Internal) ---
 map_html = """
@@ -31,7 +32,6 @@ map_html = """
             map.setView(e.geocode.center, 16);
         }).addTo(map);
         
-        // Variabel internal untuk menyimpan titik tanpa perlu lapor ke Gradio setiap saat
         window.userCoords = [];
         window.markers = [];
         
@@ -44,12 +44,8 @@ map_html = """
             window.userCoords.push([lat, lng]);
         });
 
-        // Jembatan: Fungsi ini akan dipanggil secara paksa oleh tombol Gradio nanti
-        window.getCoords = function() {
-            return JSON.stringify(window.userCoords);
-        };
+        window.getCoords = function() { return JSON.stringify(window.userCoords); };
 
-        // Jembatan: Fungsi untuk reset peta
         window.resetMap = function() {
             window.markers.forEach(m => map.removeLayer(m));
             window.markers = [];
@@ -64,7 +60,6 @@ safe_html = html.escape(map_html)
 iframe_html = f'<iframe id="leaflet_iframe" srcdoc="{safe_html}" width="100%" height="450px" style="border: 1px solid #ddd; border-radius: 8px;"></iframe>'
 
 # --- 2. Javascript Interceptor untuk Tombol Gradio ---
-# Skrip ini akan mencegat klik tombol, menyusup ke iframe, mengambil data, lalu menyerahkannya ke Python
 js_get_coords = """
 function(dummy) {
     var iframe = document.getElementById('leaflet_iframe');
@@ -85,11 +80,11 @@ function() {
 }
 """
 
-# --- 3. Fungsi Python (Kalkulasi Graf TSP) ---
+# --- 3. Fungsi Python (TSP Solver + OSRM Real Routing) ---
 def solve_efficient_route(coords_json):
     try:
         if not coords_json or coords_json.strip() == "" or coords_json == "[]":
-            return None, "⚠️ Peta masih kosong. Silakan cari lokasi dan klik minimal 2 titik pada peta."
+            return None, "⚠️ Peta masih kosong. Silakan cari lokasi dan klik minimal 2 titik."
         
         coords = json.loads(coords_json)
         n = len(coords)
@@ -97,10 +92,7 @@ def solve_efficient_route(coords_json):
         if n < 2:
             return None, "⚠️ Dibutuhkan minimal 2 titik untuk membuat rute."
             
-        names = [f"Lokasi {i+1}" for i in range(n)]
-        names[0] += " (START)"
-        
-        # Eksekusi algoritma optimasi rute
+        # Algoritma TSP (menggunakan Euclidean distance sebagai aproksimasi urutan)
         if n == 2:
             route_indices = [0, 1]
         else:
@@ -108,29 +100,58 @@ def solve_efficient_route(coords_json):
             G = nx.from_numpy_array(dist_matrix)
             route_indices = nx.approximation.traveling_salesman_problem(G, cycle=False)
         
-        m = folium.Map(location=coords[route_indices[0]], zoom_start=14)
-        path_coords = []
+        ordered_coords = [coords[idx] for idx in route_indices]
+        m = folium.Map(location=ordered_coords[0], zoom_start=14)
         route_names = []
         
+        # 3.1 Penempatan Marker dengan Label Permanen
         for step, idx in enumerate(route_indices):
             lat_lon = coords[idx]
-            path_coords.append(lat_lon)
             
-            if step == 0: order_txt = "🚀 START"
-            elif step == len(route_indices)-1: order_txt = "🏁 FINISH"
-            else: order_txt = f"📍 Urutan Ke-{step+1}"
+            if step == 0: 
+                order_txt = "🚀 START"
+                color = "green"
+            elif step == len(route_indices)-1: 
+                order_txt = "🏁 FINISH"
+                color = "red"
+            else: 
+                order_txt = f"📍 Ke-{step+1}"
+                color = "blue"
             
             route_names.append(f"{step+1}. Lokasi {idx+1}")
-            color = "green" if step == 0 else "red" if step == len(route_indices)-1 else "blue"
             
+            # tooltip dengan permanent=True membuat label selalu terlihat
             folium.Marker(
                 location=lat_lon,
-                popup=f"<b>{order_txt}</b>",
                 icon=folium.Icon(color=color, icon="info-sign"),
-                tooltip=f"Tujuan {step+1}"
+                tooltip=folium.Tooltip(f"<b>{order_txt}</b>", permanent=True, direction="top")
             ).add_to(m)
+
+        # 3.2 Menarik Garis Rute Nyata menggunakan API OSRM
+        # Format OSRM: lon,lat;lon,lat;...
+        osrm_coords = ";".join([f"{lon},{lat}" for lat, lon in ordered_coords])
+        osrm_url = f"http://router.project-osrm.org/route/v1/driving/{osrm_coords}?overview=full&geometries=geojson"
+        
+        try:
+            # Panggil API OSRM
+            response = requests.get(osrm_url, timeout=10)
+            data = response.json()
             
-        folium.PolyLine(path_coords, color="#2ecc71", weight=5, opacity=0.8, dash_array="10").add_to(m)
+            if data.get("code") == "Ok":
+                # Jika berhasil, gambar rute jalan raya (GeoJSON)
+                route_geo = data["routes"][0]["geometry"]
+                folium.GeoJson(
+                    route_geo,
+                    name='Rute Jalan',
+                    style_function=lambda x: {'color': '#3388ff', 'weight': 5, 'opacity': 0.8}
+                ).add_to(m)
+            else:
+                raise Exception("OSRM Response bukan Ok")
+                
+        except Exception as e:
+            # Fallback (Rencana B): Jika API OSRM error/down, kembali gambar garis lurus
+            folium.PolyLine(ordered_coords, color="#2ecc71", weight=5, opacity=0.8, dash_array="10").add_to(m)
+            print(f"Fallback to linear route due to OSRM error: {e}")
         
         return m._repr_html_(), f"✅ Rute Optimal Ditemukan:\n{' ➡️ '.join(route_names)}"
         
@@ -146,7 +167,6 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald")) as app:
             gr.Markdown("### 1️⃣ Cari & Pilih Lokasi di Peta\nGunakan ikon kaca pembesar (🔍) untuk mencari alamat, lalu **klik** lokasi tersebut.")
             gr.HTML(iframe_html)
             
-            # Kita gunakan Textbox tersembunyi murni sebagai "pipa" aliran data dari JS ke Python
             dummy_input = gr.Textbox(visible=False)
             
             with gr.Row():
@@ -158,7 +178,6 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald")) as app:
             output_map = gr.HTML(label="Peta Rute")
             output_text = gr.Textbox(label="Urutan Kunjungan", lines=4)
 
-    # Aksi Tombol: Tombol akan menjalankan JS dulu, hasilnya baru disuapkan ke Python
     submit_btn.click(
         fn=solve_efficient_route, 
         inputs=dummy_input, 
