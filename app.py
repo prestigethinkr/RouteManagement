@@ -19,7 +19,7 @@ map_html = """
         body, html { margin: 0; padding: 0; height: 100%; }
         /* Mempertebal font tooltip agar lebih jelas dibaca */
         .leaflet-tooltip { font-weight: bold; font-size: 13px; }
-    </style>
+    </style>    
 </head>
 <body>
     <div id="map" style="width: 100vw; height: 100vh;"></div>
