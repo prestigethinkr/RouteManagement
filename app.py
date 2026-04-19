@@ -165,10 +165,10 @@ def solve_efficient_route(coords_json):
 
         # Coba tarik garis rute nyata via OSRM
         osrm_coords = ";".join([f"{lon},{lat}" for lat, lon in ordered_coords])
-        osrm_url = f"http://router.project-osrm.org/route/v1/driving/{osrm_coords}?overview=full&geometries=geojson"
+        osrm_url = f"http://20.187.66.251:5000/route/v1/driving/{osrm_coords}?overview=full&geometries=geojson"
         
         try:
-            response = requests.get(osrm_url, timeout=10)
+            response = requests.get(osrm_url, timeout=60)
             data = response.json()
             if data.get("code") == "Ok":
                 route_geo = data["routes"][0]["geometry"]

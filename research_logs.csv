@@ -1,0 +1,2 @@
+Timestamp,Algorithm,Total Outlets,Unassigned Outlets,Total Vehicles Used,Total Distance km,Total Driving Time hrs,Avg Kubikasi %,Avg Tonase %,Avg EPE %,Execution Time sec
+2026-04-17 11:19:20,OR-Tools,1115,5,59,2022.043,50.5511,89.33,68.34,90.58,21.838

@@ -3,3 +3,10 @@ folium
 networkx
 scipy
 requests
+fastapi
+uvicorn[standard]
+ortools
+httpx
+pydantic
+numpy
+hygese
