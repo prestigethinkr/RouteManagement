@@ -61,7 +61,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Tuning constants
 # ---------------------------------------------------------------------------
-OSRM_BASE = "http://127.0.0.1:5001"
+OSRM_BASE = "http://20.187.66.251/api/optimize"
 
 DEMAND_SCALE = 1000          # m³/kg float → int scaling (preserves 3 decimals)
 
