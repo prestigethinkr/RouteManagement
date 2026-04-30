@@ -265,7 +265,7 @@ export default function FleetDispatchPage() {
           let routeGeometry: GeoJsonLineString | undefined;
           try {
             // GET with coords in URL path — avoids URLSearchParams encoding semicolons as %3B
-            const osrmUrl = `http://20.187.66.251:5000/route/v1/driving/${coordsString}?overview=full&geometries=geojson&continue_straight=true`;
+            const osrmUrl = `http://20.187.66.251/osrm/route/v1/driving/${coordsString}?overview=full&geometries=geojson`;
             const osrmRes = await fetch(osrmUrl);
             if (!osrmRes.ok) {
               console.warn(`[OSRM Route] ${vehicle.NO_KEND}: HTTP ${osrmRes.status}`);
