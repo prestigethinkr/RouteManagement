@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import dynamic from "next/dynamic";
 import { useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
 import FleetSummaryTable from "@/components/FleetSummaryTable";
+import { simplifyCoordinates } from "@/lib/cvrp";
 import {
   Loader2,
   MapPin,
@@ -26,6 +27,7 @@ import {
   Menu,
   X,
   BarChart2,
+  RouteIcon,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -34,7 +36,7 @@ import {
 const MapRoute = dynamic(() => import("@/components/MapRoute"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full w-full items-center justify-center rounded-xl bg-gray-900">
+    <div className="flex h-full w-full items-center justify-center rounded-xl bg-slate-100">
       <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
     </div>
   ),
@@ -104,8 +106,13 @@ export default function FleetDispatchPage() {
   const [invoiceFileName, setInvoiceFileName] = useState<string | null>(null);
   const [vehicleFileName, setVehicleFileName] = useState<string | null>(null);
   const [assigning, setAssigning] = useState(false);
+  const [isDrawingRoutes, setIsDrawingRoutes] = useState(false);
   const [loading, setLoading] = useState(false);
   const [assignStatusText, setAssignStatusText] = useState("");
+
+  // --- Env-var URLs (configurable via .env.local) ---
+  const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+  const OSRM_URL = process.env.NEXT_PUBLIC_OSRM_URL ?? "http://203.175.125.185:8001";
 
   // --- Panel visibility ---
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(true);
@@ -213,13 +220,23 @@ export default function FleetDispatchPage() {
         })),
         algorithm: selectedAlgorithm,
         max_stops: maxStops,
+        trip_iteration: 1,
       };
 
-      const backendRes = await fetch("http://localhost:8000/optimize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(new Error("Timeout: The solver took longer than 5 minutes to respond.")), 300000); // 300s timeout
+
+      let backendRes;
+      try {
+        backendRes = await fetch(`${BACKEND_URL}/optimize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!backendRes.ok) {
         const errText = await backendRes.text();
@@ -240,58 +257,73 @@ export default function FleetDispatchPage() {
 
       // PHASE B: Reconstruct outlet objects + fetch OSRM road geometries
       setAssignStatusText("Drawing road networks…");
+      setIsDrawingRoutes(true);
 
       const outletMap = new Map(pendingOutlets.map((o) => [o.custno, o]));
       const vehicleMap = new Map(availableVehicles.map((v) => [v.NO_KEND, v]));
 
-      const finalRoutes = await Promise.all(
-        optimizedData.assigned_routes.map(async (routeGroup, idx) => {
-          // Reconstruct ordered outlet objects from optimized sequence
-          const orderedOutlets = routeGroup.route
-            .map((id) => outletMap.get(id))
-            .filter((o): o is PendingOutlet => o !== undefined);
+      let finalRoutes: AssignedRoute[] = [];
+      try {
+        finalRoutes = await Promise.all(
+          optimizedData.assigned_routes.map(async (routeGroup, idx) => {
+            const orderedOutlets = routeGroup.route
+              .map((id) => outletMap.get(id))
+              .filter((o): o is PendingOutlet => o !== undefined);
 
-          const vehicle = vehicleMap.get(routeGroup.vehicle_id)!;
+            const vehicle = vehicleMap.get(routeGroup.vehicle_id)!;
 
-          // Build OSRM coordinate string: depot → outlets in optimized order
-          // Filter out any points with NaN coords before building the URL
-          const rawCoords = [
-            `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
-            ...orderedOutlets.map((o) => `${o.lng},${o.lat}`),
-          ].filter((c) => !c.includes("NaN"));
+            const rawCoords = [
+              `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+              ...orderedOutlets.map((o) => `${o.lng},${o.lat}`),
+            ].filter((c) => !c.includes("NaN"));
 
-          const coordsString = rawCoords.join(";");
+            const coordsString = rawCoords.join(";");
 
-          let routeGeometry: GeoJsonLineString | undefined;
-          try {
-            // GET with coords in URL path — avoids URLSearchParams encoding semicolons as %3B
-            const osrmUrl = `http://20.187.66.251/osrm/route/v1/driving/${coordsString}?overview=full&geometries=geojson`;
-            const osrmRes = await fetch(osrmUrl);
-            if (!osrmRes.ok) {
-              console.warn(`[OSRM Route] ${vehicle.NO_KEND}: HTTP ${osrmRes.status}`);
-            } else {
-              const osrmData = await osrmRes.json();
-              const routeObj = osrmData.routes?.[0];
-              if (routeObj) {
-                routeGeometry = routeObj.geometry ?? undefined;
+            let routeGeometry: GeoJsonLineString | undefined;
+            try {
+              const osrmUrl = `${OSRM_URL}/route/v1/driving/${coordsString}?overview=full&geometries=geojson`;
+              const osrmRes = await fetch(osrmUrl);
+              if (!osrmRes.ok) {
+                console.error(
+                  `[OSRM Route] ${vehicle.NO_KEND}: HTTP ${osrmRes.status} — check CORS headers or OSRM server availability at ${OSRM_URL}`
+                );
+              } else {
+                const osrmData = await osrmRes.json();
+                const routeObj = osrmData.routes?.[0];
+                if (routeObj?.geometry?.coordinates?.length) {
+                  const simplified = simplifyCoordinates(
+                    routeObj.geometry.coordinates as [number, number][]
+                  );
+                  routeGeometry = { ...routeObj.geometry, coordinates: simplified };
+                } else {
+                  console.error(
+                    `[OSRM Route] ${vehicle.NO_KEND}: empty or invalid geometry in response`,
+                    osrmData
+                  );
+                }
               }
+            } catch (err) {
+              console.error(
+                `[OSRM Route] ${vehicle.NO_KEND}: network or CORS error —`,
+                err
+              );
             }
-          } catch (err) {
-            console.warn(`[OSRM Route] ${vehicle.NO_KEND}:`, err);
-          }
 
-          return {
-            vehicle,
-            outlets: orderedOutlets,
-            currentM3: routeGroup.total_m3,
-            currentKg: routeGroup.total_kg,
-            routeGeometry,
-            durationSeconds: routeGroup.total_duration_s ?? 0,
-            distanceKm: routeGroup.total_distance_km ?? 0,
-            color: ROUTE_COLORS[idx % ROUTE_COLORS.length],
-          } satisfies AssignedRoute;
-        })
-      );
+            return {
+              vehicle,
+              outlets: orderedOutlets,
+              currentM3: routeGroup.total_m3,
+              currentKg: routeGroup.total_kg,
+              routeGeometry,
+              durationSeconds: routeGroup.total_duration_s ?? 0,
+              distanceKm: routeGroup.total_distance_km ?? 0,
+              color: ROUTE_COLORS[idx % ROUTE_COLORS.length],
+            } satisfies AssignedRoute;
+          })
+        );
+      } finally {
+        setIsDrawingRoutes(false);
+      }
 
       // Map unassigned IDs back to full outlet objects
       const unassigned = optimizedData.unassigned_outlets
@@ -323,41 +355,45 @@ export default function FleetDispatchPage() {
     }
   }
 
-  // --- Assign 2nd Trip (Ritase 2) ---
-  async function assignSecondTrip() {
+  // --- Assign Next Trip ---
+  async function assignNextTrip() {
     if (unassignedOutlets.length === 0) return;
     setAssigning(true);
-    setAssignStatusText("Selecting fastest vehicles for Trip 2…");
+
+    const currentMaxTrip = Math.max(1, ...assignedRoutes.map(r => {
+      const match = r.vehicle.NO_KEND.match(/\(Trip (\d+)\)/);
+      return match ? parseInt(match[1]) : 1;
+    }));
+    const nextTripNum = currentMaxTrip + 1;
+
+    setAssignStatusText(`Selecting fastest vehicles for Trip ${nextTripNum}…`);
 
     try {
-      // 1. Calculate total required capacity for unassigned outlets
       const requiredM3 = unassignedOutlets.reduce((sum, o) => sum + o.total_kubikasi_m3, 0);
       const requiredKg = unassignedOutlets.reduce((sum, o) => sum + o.total_berat_kg, 0);
 
-      // 2. Sort current routes by duration (fastest first)
       const sortedRoutes = [...assignedRoutes].sort(
         (a, b) => (a.durationSeconds || 0) - (b.durationSeconds || 0)
       );
 
-      // 3. Select vehicles until capacity is met
       const selectedVehicles: Vehicle[] = [];
       let accumulatedM3 = 0;
       let accumulatedKg = 0;
 
       for (const routeGroup of sortedRoutes) {
         if (accumulatedM3 >= requiredM3 && accumulatedKg >= requiredKg) break;
+        const baseNoKend = routeGroup.vehicle.NO_KEND.split(" (Trip ")[0];
         const vehicleClone: Vehicle = {
           ...routeGroup.vehicle,
-          NO_KEND: `${routeGroup.vehicle.NO_KEND} (Trip 2)`,
+          NO_KEND: `${baseNoKend} (Trip ${nextTripNum})`,
         };
         selectedVehicles.push(vehicleClone);
         accumulatedM3 += vehicleClone.KUBIKASE;
         accumulatedKg += vehicleClone.TONASE;
       }
 
-      setAssignStatusText("AI is calculating Trip 2 routes…");
+      setAssignStatusText(`AI is calculating Trip ${nextTripNum} routes…`);
 
-      // 4. Build payload for Python backend
       const payload = {
         depot: { lat: DEPOT_COORDS.lat, lng: DEPOT_COORDS.lng },
         outlets: unassignedOutlets.map((o) => ({
@@ -366,26 +402,43 @@ export default function FleetDispatchPage() {
           lng: o.lng,
           m3: o.total_kubikasi_m3,
           kg: o.total_berat_kg,
+          custname: o.custname,
+          jns_kend: o.jns_kend,
+          invoices: o.invoices.map((inv) => ({
+            invno: inv.INVNO,
+            m3: inv.TOTAL_KUBIKASI_M3,
+            kg: inv.TOTAL_BERAT_KG,
+          })),
         })),
         vehicles: selectedVehicles.map((v) => ({
           id: v.NO_KEND,
           max_m3: v.KUBIKASE,
           max_kg: v.TONASE,
+          jns_kend: v.JNS_KEND,
         })),
         algorithm: viewingAlgorithm,
         max_stops: maxStops,
+        trip_iteration: nextTripNum,
       };
 
-      // 5. Fetch from Python backend
-      const backendRes = await fetch("http://localhost:8000/optimize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(new Error("Timeout: The solver took longer than 5 minutes to respond.")), 300000); // 300s timeout
+
+      let backendRes;
+      try {
+        backendRes = await fetch(`${BACKEND_URL}/optimize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!backendRes.ok) {
         const errText = await backendRes.text();
-        throw new Error(`Trip 2 optimization failed: ${errText}`);
+        throw new Error(`Trip ${nextTripNum} optimization failed: ${errText}`);
       }
 
       const optimizedData: {
@@ -400,56 +453,72 @@ export default function FleetDispatchPage() {
         unassigned_outlets: string[];
       } = await backendRes.json();
 
-      setAssignStatusText("Drawing Trip 2 road networks…");
+      setAssignStatusText(`Drawing Trip ${nextTripNum} road networks…`);
+      setIsDrawingRoutes(true);
 
-      // 6. Reconstruct outlet objects + fetch OSRM road geometries
       const outletMap = new Map(unassignedOutlets.map((o) => [o.custno, o]));
       const vehicleMap = new Map(selectedVehicles.map((v) => [v.NO_KEND, v]));
       const colorOffset = assignedRoutes.length;
 
-      const trip2Routes = await Promise.all(
-        optimizedData.assigned_routes.map(async (routeGroup, idx) => {
-          const orderedOutlets = routeGroup.route
-            .map((id) => outletMap.get(id))
-            .filter((o): o is PendingOutlet => o !== undefined);
+      let nextTripRoutes: AssignedRoute[] = [];
+      try {
+        nextTripRoutes = await Promise.all(
+          optimizedData.assigned_routes.map(async (routeGroup, idx) => {
+            const orderedOutlets = routeGroup.route
+              .map((id) => outletMap.get(id))
+              .filter((o): o is PendingOutlet => o !== undefined);
 
-          const vehicle = vehicleMap.get(routeGroup.vehicle_id)!;
+            const vehicle = vehicleMap.get(routeGroup.vehicle_id)!;
 
-          const rawCoords = [
-            `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
-            ...orderedOutlets.map((o) => `${o.lng},${o.lat}`),
-          ].filter((c) => !c.includes("NaN"));
-          const coordsString = rawCoords.join(";");
+            const rawCoords = [
+              `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+              ...orderedOutlets.map((o) => `${o.lng},${o.lat}`),
+            ].filter((c) => !c.includes("NaN"));
+            const coordsString = rawCoords.join(";");
 
-          let routeGeometry: GeoJsonLineString | undefined;
-          try {
-            const osrmUrl = `http://20.187.66.251:5000/route/v1/driving/${coordsString}?overview=full&geometries=geojson&continue_straight=true`;
-            const osrmRes = await fetch(osrmUrl);
-            if (osrmRes.ok) {
-              const osrmData = await osrmRes.json();
-              const routeObj = osrmData.routes?.[0];
-              if (routeObj) {
-                routeGeometry = routeObj.geometry ?? undefined;
+            let routeGeometry: GeoJsonLineString | undefined;
+            try {
+              const osrmUrl = `${OSRM_URL}/route/v1/driving/${coordsString}?overview=full&geometries=geojson&continue_straight=true`;
+              const osrmRes = await fetch(osrmUrl);
+              if (!osrmRes.ok) {
+                console.error(
+                  `[OSRM Trip2] ${vehicle.NO_KEND}: HTTP ${osrmRes.status} — check CORS or OSRM server at ${OSRM_URL}`
+                );
+              } else {
+                const osrmData = await osrmRes.json();
+                const routeObj = osrmData.routes?.[0];
+                if (routeObj?.geometry?.coordinates?.length) {
+                  const simplified = simplifyCoordinates(
+                    routeObj.geometry.coordinates as [number, number][]
+                  );
+                  routeGeometry = { ...routeObj.geometry, coordinates: simplified };
+                } else {
+                  console.error(
+                    `[OSRM Trip2] ${vehicle.NO_KEND}: empty or invalid geometry`,
+                    osrmData
+                  );
+                }
               }
+            } catch (err) {
+              console.error(`[OSRM Trip2] ${vehicle.NO_KEND}: network or CORS error —`, err);
             }
-          } catch (err) {
-            console.warn(`[OSRM Trip2] ${vehicle.NO_KEND}:`, err);
-          }
 
-          return {
-            vehicle,
-            outlets: orderedOutlets,
-            currentM3: routeGroup.total_m3,
-            currentKg: routeGroup.total_kg,
-            routeGeometry,
-            durationSeconds: routeGroup.total_duration_s ?? 0,
-            distanceKm: routeGroup.total_distance_km ?? 0,
-            color: ROUTE_COLORS[(colorOffset + idx) % ROUTE_COLORS.length],
-          } satisfies AssignedRoute;
-        })
-      );
+            return {
+              vehicle,
+              outlets: orderedOutlets,
+              currentM3: routeGroup.total_m3,
+              currentKg: routeGroup.total_kg,
+              routeGeometry,
+              durationSeconds: routeGroup.total_duration_s ?? 0,
+              distanceKm: routeGroup.total_distance_km ?? 0,
+              color: ROUTE_COLORS[(colorOffset + idx) % ROUTE_COLORS.length],
+            } satisfies AssignedRoute;
+          })
+        );
+      } finally {
+        setIsDrawingRoutes(false);
+      }
 
-      // 7. Append new routes to existing state and update unassigned
       const newlyAssignedIds = new Set(
         optimizedData.assigned_routes.flatMap((r) => r.route)
       );
@@ -457,7 +526,7 @@ export default function FleetDispatchPage() {
         (o) => !newlyAssignedIds.has(o.custno)
       );
       const updatedResult = {
-        routes: [...assignedRoutes, ...trip2Routes],
+        routes: [...assignedRoutes, ...nextTripRoutes],
         unassigned: remainingUnassigned,
       };
       if (viewingAlgorithm === "ortools") {
@@ -465,17 +534,17 @@ export default function FleetDispatchPage() {
       } else {
         setHygeseResult(updatedResult);
       }
-      setVisibleVehicles((prev) => [...prev, ...trip2Routes.map((r) => r.vehicle.NO_KEND)]);
+      setVisibleVehicles((prev) => [...prev, ...nextTripRoutes.map((r) => r.vehicle.NO_KEND)]);
 
       const stillUnassigned = optimizedData.unassigned_outlets.length;
       toast({
-        title: "Trip 2 assigned",
-        description: `${trip2Routes.length} vehicle(s) dispatched, ${stillUnassigned} outlet(s) still unassigned`,
+        title: `Trip ${nextTripNum} assigned`,
+        description: `${nextTripRoutes.length} vehicle(s) dispatched, ${stillUnassigned} outlet(s) still unassigned`,
       });
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Trip 2 failed",
+        title: "Trip Assignment failed",
         description: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
@@ -492,14 +561,14 @@ export default function FleetDispatchPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-gray-950 text-gray-100">
+    <div className="relative w-full h-screen overflow-hidden bg-slate-100">
 
       {/* ════════════ FULL-SCREEN MAP ════════════ */}
       <div className="absolute inset-0 z-0">
         {!hasRoutes && !isDataLoaded ? (
-          <div className="flex h-full w-full flex-col items-center justify-center text-gray-700">
-            <Truck className="mb-3 h-16 w-16 opacity-20" />
-            <p className="text-sm font-medium opacity-50">Upload files and load data to begin</p>
+          <div className="flex h-full w-full flex-col items-center justify-center text-slate-400 bg-slate-50">
+            <RouteIcon className="mb-3 h-14 w-14 opacity-20" />
+            <p className="text-sm font-medium">Upload files and load data to begin</p>
           </div>
         ) : !hasRoutes && isDataLoaded ? (
           <MapRoute routes={[]} pendingOutlets={pendingOutlets} focusedOutlet={focusedOutlet} />
@@ -513,7 +582,7 @@ export default function FleetDispatchPage() {
       {!isLeftPanelOpen && (
         <button
           onClick={() => setIsLeftPanelOpen(true)}
-          className="absolute top-4 left-4 z-[1000] bg-slate-900/80 backdrop-blur border border-slate-700 p-3 rounded-lg shadow-lg cursor-pointer text-slate-300 hover:text-white transition-colors"
+          className="absolute top-4 left-4 z-[1000] bg-white border border-slate-200 p-2.5 rounded-lg shadow-sm cursor-pointer text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
           title="Open panel"
         >
           <Menu className="h-4 w-4" />
@@ -527,40 +596,40 @@ export default function FleetDispatchPage() {
         }`}
       >
         {/* Routes / empty state */}
-        <div className="w-72 flex flex-col max-h-full bg-slate-900/80 backdrop-blur-md rounded-xl border border-slate-700 shadow-2xl overflow-hidden">
-          <div className="shrink-0 px-3 pt-3 pb-2 flex items-center justify-between">
+        <div className="w-72 flex flex-col max-h-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="shrink-0 px-3 pt-3 pb-2 flex items-center justify-between border-b border-slate-100">
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setIsLeftPanelOpen(false)}
-                className="text-slate-500 hover:text-slate-200 transition-colors p-0.5 rounded"
+                className="text-slate-400 hover:text-slate-700 transition-colors p-0.5 rounded"
                 title="Close panel"
               >
                 <X className="h-4 w-4" />
               </button>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
                 {hasRoutes ? `Assigned Routes (${assignedRoutes.length})` : "Route Summary"}
               </p>
             </div>
             {hasRoutes && (
               <div className="flex gap-1">
-                <button onClick={showAllVehicles} className="text-[10px] px-1.5 py-0.5 rounded text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors">All</button>
-                <button onClick={hideAllVehicles} className="text-[10px] px-1.5 py-0.5 rounded text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors">None</button>
+                <button onClick={showAllVehicles} className="text-[10px] px-1.5 py-0.5 rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors">All</button>
+                <button onClick={hideAllVehicles} className="text-[10px] px-1.5 py-0.5 rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors">None</button>
               </div>
             )}
           </div>
 
           {/* Algorithm comparison toggle */}
           {hasAnyResult && (
-            <div className="shrink-0 flex mx-3 mb-2 rounded-lg border border-slate-700 overflow-hidden text-[10px] font-semibold">
+            <div className="shrink-0 flex mx-3 my-2 rounded-lg border border-slate-200 overflow-hidden text-[10px] font-semibold">
               <button
                 disabled={!ortoolsResult}
                 onClick={() => ortoolsResult && switchView("ortools")}
-                className={`flex-1 py-1.5 transition-colors border-r border-slate-700 ${
+                className={`flex-1 py-1.5 transition-colors border-r border-slate-200 ${
                   viewingAlgorithm === "ortools" && ortoolsResult
-                    ? "bg-blue-600/30 text-blue-300"
+                    ? "bg-slate-100 text-slate-900 border-slate-300"
                     : ortoolsResult
-                      ? "text-slate-500 hover:bg-slate-800"
-                      : "text-slate-700 cursor-not-allowed"
+                      ? "text-slate-500 hover:bg-slate-50 bg-white"
+                      : "text-slate-300 cursor-not-allowed bg-white"
                 }`}
               >
                 OR-Tools {ortoolsResult ? "✓" : "–"}
@@ -570,10 +639,10 @@ export default function FleetDispatchPage() {
                 onClick={() => hygeseResult && switchView("pyhygese")}
                 className={`flex-1 py-1.5 transition-colors ${
                   viewingAlgorithm === "pyhygese" && hygeseResult
-                    ? "bg-violet-600/30 text-violet-300"
+                    ? "bg-slate-100 text-slate-900"
                     : hygeseResult
-                      ? "text-slate-500 hover:bg-slate-800"
-                      : "text-slate-700 cursor-not-allowed"
+                      ? "text-slate-500 hover:bg-slate-50 bg-white"
+                      : "text-slate-300 cursor-not-allowed bg-white"
                 }`}
               >
                 HGS-CVRP {hygeseResult ? "✓" : "–"}
@@ -583,8 +652,8 @@ export default function FleetDispatchPage() {
 
           <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
             {!hasRoutes ? (
-              <div className="flex flex-col items-center justify-center py-8 text-center text-slate-600">
-                <Truck className="mb-2 h-8 w-8 opacity-30" />
+              <div className="flex flex-col items-center justify-center py-10 text-center text-slate-400">
+                <Truck className="mb-2 h-8 w-8 opacity-25" />
                 <p className="text-xs">
                   {isDataLoaded
                     ? 'Click "Auto-Assign Fleet" to compute routes'
@@ -599,9 +668,9 @@ export default function FleetDispatchPage() {
                   const isExpanded = !!expandedFleets[route.vehicle.NO_KEND];
                   const isVehicleVisible = visibleVehicles.includes(route.vehicle.NO_KEND);
                   return (
-                    <div key={idx} className="rounded-lg border border-slate-700 bg-slate-800/50">
+                    <div key={idx} className="rounded-lg border border-slate-200 bg-white overflow-hidden">
                       {/* Accordion header */}
-                      <div className="w-full flex items-center gap-1 px-3 pt-3 pb-1">
+                      <div className="w-full flex items-center gap-1 px-3 pt-2.5 pb-1.5">
                         <button
                           className="flex items-center gap-2 text-left flex-1 min-w-0"
                           onClick={() => toggleFleet(route.vehicle.NO_KEND)}
@@ -613,30 +682,30 @@ export default function FleetDispatchPage() {
                             {idx + 1}
                           </span>
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs font-bold text-slate-100">
+                            <p className="truncate text-xs font-bold text-slate-900">
                               {route.vehicle.NO_KEND}
                             </p>
-                            <div className="text-[10px] text-slate-300 flex items-center gap-1 flex-wrap">
+                            <div className="text-[10px] text-slate-500 flex items-center gap-1 flex-wrap">
                               <span>{route.vehicle.JNS_KEND}</span>
                               <span>·</span>
                               <span>{route.outlets.length} stop(s)</span>
                               {(route.distanceKm > 0 || route.durationSeconds > 0) && (
                                 <>
                                   <span>·</span>
-                                  <span className="font-semibold text-blue-400">{formatDistance(route.distanceKm)}</span>
+                                  <span className="font-semibold text-blue-600">{formatDistance(route.distanceKm)}</span>
                                   <span>·</span>
-                                  <span className="font-semibold text-amber-400">ETA: {formatDuration(route.durationSeconds)}</span>
+                                  <span className="font-semibold text-amber-600">ETA: {formatDuration(route.durationSeconds)}</span>
                                 </>
                               )}
                             </div>
                           </div>
                           {isExpanded
-                            ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-slate-500" />
-                            : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-500" />}
+                            ? <ChevronUp className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
                         </button>
                         <button
                           className="shrink-0 rounded p-0.5 transition-colors"
-                          style={{ color: isVehicleVisible ? route.color : "#6b7280" }}
+                          style={{ color: isVehicleVisible ? route.color : "#94a3b8" }}
                           title={isVehicleVisible ? "Hide route" : "Show route"}
                           onClick={() => toggleVehicleVisibility(route.vehicle.NO_KEND)}
                         >
@@ -662,11 +731,11 @@ export default function FleetDispatchPage() {
 
                       {/* Outlet list — accordion body */}
                       {isExpanded && (
-                        <div className="border-t border-slate-700 px-3 py-2 space-y-1">
+                        <div className="border-t border-slate-100 px-3 py-2 space-y-0.5 bg-slate-50/60">
                           {route.outlets.map((outlet, sIdx) => (
                             <div
                               key={sIdx}
-                              className="flex items-center gap-2 rounded px-2 py-1 text-[10px] hover:bg-slate-700/50 cursor-pointer"
+                              className="flex items-center gap-2 rounded px-2 py-1 text-[10px] hover:bg-white cursor-pointer transition-colors"
                               onClick={() => setFocusedOutlet({ custno: outlet.custno, lat: outlet.lat, lng: outlet.lng })}
                             >
                               <span
@@ -676,7 +745,7 @@ export default function FleetDispatchPage() {
                                 {sIdx + 1}
                               </span>
                               <div className="min-w-0 flex-1">
-                                <p className="truncate text-slate-200 font-medium">{outlet.custname}</p>
+                                <p className="truncate text-slate-800 font-medium">{outlet.custname}</p>
                                 <p className="text-slate-400">{outlet.total_kubikasi_m3.toFixed(2)} m³ | {outlet.total_berat_kg.toFixed(2)} Kg</p>
                               </div>
                             </div>
@@ -689,25 +758,25 @@ export default function FleetDispatchPage() {
 
                 {/* Unassigned warning + 2nd Trip */}
                 {unassignedOutlets.length > 0 && (
-                  <div className="rounded-lg border border-amber-800/50 bg-amber-900/20 p-3">
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
                     <div className="mb-1 flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-700">
                         <AlertTriangle className="h-3.5 w-3.5" />
                         {unassignedOutlets.length} Unassigned
                       </div>
                       {assignedRoutes.length > 0 && (
                         <button
-                          onClick={assignSecondTrip}
+                          onClick={assignNextTrip}
                           disabled={assigning}
-                          className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium rounded shadow disabled:opacity-50 transition-colors"
+                          className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-medium rounded-md shadow-sm disabled:opacity-50 transition-colors"
                         >
-                          {assigning ? "Calculating…" : "Assign 2nd Trip"}
+                          {assigning ? "Calculating…" : "Assign Next Trip"}
                         </button>
                       )}
                     </div>
                     <div className="max-h-32 overflow-y-auto space-y-0.5">
                       {unassignedOutlets.map((o, i) => (
-                        <p key={i} className="truncate text-[10px] text-amber-300/70">
+                        <p key={i} className="truncate text-[10px] text-amber-600/80">
                           {o.custname} ({o.custno})
                         </p>
                       ))}
@@ -721,78 +790,78 @@ export default function FleetDispatchPage() {
       </div>
 
       {/* ════════════ FLOATING TOP-RIGHT CONTROL PANEL ════════════ */}
-      <div className="absolute top-4 right-4 z-[1000] w-72 bg-slate-900/80 backdrop-blur-md rounded-xl border border-slate-700 shadow-2xl p-4 flex flex-col gap-4">
+      <div className="absolute top-4 right-4 z-[1000] w-72 bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex flex-col gap-4">
 
         {/* File uploads */}
         <div className="space-y-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
             File Uploads
           </p>
 
           <input ref={invoiceInputRef} type="file" accept=".csv,.xls,.xlsx" className="hidden" onChange={handleInvoiceFile} />
           <button
             onClick={() => invoiceInputRef.current?.click()}
-            className="flex w-full items-center gap-2.5 rounded-lg border border-dashed border-slate-700 p-2.5 text-left transition-colors hover:border-blue-500 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-2.5 text-left transition-colors hover:border-blue-400 hover:bg-slate-100"
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600/20">
-              <FileSpreadsheet className="h-3.5 w-3.5 text-blue-400" />
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 border border-blue-100">
+              <FileSpreadsheet className="h-3.5 w-3.5 text-slate-400" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-slate-200">
+              <p className="truncate text-xs font-medium text-slate-700">
                 {invoiceFileName ?? "Upload Invoices"}
               </p>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-[10px] text-slate-400">
                 {pendingOutlets.length > 0
                   ? `${pendingOutlets.length} outlets · ${totalInvoices} invoices`
                   : "CUSTNO, INVNO, LAT, LNG, M³, KG…"}
               </p>
             </div>
-            <UploadCloud className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+            <UploadCloud className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           </button>
 
           <input ref={vehicleInputRef} type="file" accept=".csv,.xls,.xlsx" className="hidden" onChange={handleVehicleFile} />
           <button
             onClick={() => vehicleInputRef.current?.click()}
-            className="flex w-full items-center gap-2.5 rounded-lg border border-dashed border-slate-700 p-2.5 text-left transition-colors hover:border-green-500 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-2.5 text-left transition-colors hover:border-blue-400 hover:bg-slate-100"
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-green-600/20">
-              <Truck className="h-3.5 w-3.5 text-green-400" />
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-green-50 border border-green-100">
+              <Truck className="h-3.5 w-3.5 text-slate-400" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-slate-200">
+              <p className="truncate text-xs font-medium text-slate-700">
                 {vehicleFileName ?? "Upload Fleet"}
               </p>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-[10px] text-slate-400">
                 {availableVehicles.length > 0
                   ? `${availableVehicles.length} vehicle(s)`
                   : "JNS_KEND, NO_KEND, KUBIKASE, TONASE"}
               </p>
             </div>
-            <UploadCloud className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+            <UploadCloud className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           </button>
         </div>
 
         {/* Algorithm selector */}
         <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
             Algorithm
           </p>
-          <div className="flex rounded-lg border border-slate-700 overflow-hidden text-xs font-medium">
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-medium bg-white">
             <button
               className={`flex-1 py-1.5 transition-colors ${
                 selectedAlgorithm === "ortools"
                   ? "bg-blue-600 text-white"
-                  : "text-slate-400 hover:bg-slate-800"
+                  : "text-slate-600 hover:bg-slate-50"
               }`}
               onClick={() => setSelectedAlgorithm("ortools")}
             >
               OR-Tools
             </button>
             <button
-              className={`flex-1 py-1.5 transition-colors border-l border-slate-700 ${
+              className={`flex-1 py-1.5 transition-colors border-l border-slate-200 ${
                 selectedAlgorithm === "pyhygese"
                   ? "bg-violet-600 text-white"
-                  : "text-slate-400 hover:bg-slate-800"
+                  : "text-slate-600 hover:bg-slate-50"
               }`}
               onClick={() => setSelectedAlgorithm("pyhygese")}
             >
@@ -805,7 +874,7 @@ export default function FleetDispatchPage() {
         <div className="space-y-1.5">
           <label
             htmlFor="max-stops"
-            className="text-[10px] font-semibold uppercase tracking-widest text-slate-500"
+            className="text-[10px] font-semibold uppercase tracking-widest text-slate-400"
           >
             Max Stops per Vehicle
           </label>
@@ -819,14 +888,14 @@ export default function FleetDispatchPage() {
               const v = parseInt(e.target.value, 10);
               if (!isNaN(v) && v >= 1 && v <= 500) setMaxStops(v);
             }}
-            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
           />
         </div>
 
         {/* Action buttons */}
         <div className="flex flex-col gap-2">
           <Button
-            className="w-full gap-2"
+            className="w-full gap-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-medium rounded-md shadow-sm text-xs"
             variant="secondary"
             disabled={!bothLoaded || isDataLoaded}
             onClick={handleLoadData}
@@ -835,16 +904,20 @@ export default function FleetDispatchPage() {
             {isDataLoaded ? "Data Loaded ✓" : "Load Data"}
           </Button>
           <Button
-            className="w-full gap-2"
+            className="w-full gap-2 bg-blue-600 text-white hover:bg-blue-700 font-medium rounded-md shadow-sm text-xs"
             disabled={!isDataLoaded || assigning}
             onClick={autoAssignRoutes}
           >
             {assigning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-            {assigning ? "Computing…" : "Auto-Assign Fleet"}
+            {assigning
+              ? isDrawingRoutes
+                ? "Drawing Routes…"
+                : "Computing…"
+              : "Auto-Assign Fleet"}
           </Button>
           {activeResult && (
             <Button
-              className="w-full gap-2"
+              className="w-full gap-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-medium rounded-md shadow-sm text-xs"
               variant="secondary"
               onClick={() => setIsSummaryOpen(true)}
             >
@@ -853,7 +926,7 @@ export default function FleetDispatchPage() {
             </Button>
           )}
           {assigning && assignStatusText && (
-            <div className="text-sm text-slate-300 text-center break-words mt-2">
+            <div className="text-xs text-slate-500 text-center break-words mt-1">
               {assignStatusText}
             </div>
           )}
@@ -862,12 +935,12 @@ export default function FleetDispatchPage() {
         {/* Summary chips */}
         {hasRoutes && (
           <div className="flex gap-2">
-            <div className="flex flex-1 items-center gap-1 rounded-lg bg-slate-800 px-2 py-1.5 text-[10px] text-slate-400">
-              <Package className="h-3 w-3 text-blue-400" />
+            <div className="flex flex-1 items-center gap-1 rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5 text-[10px] text-slate-600">
+              <Package className="h-3 w-3 text-blue-500" />
               {assignedRoutes.reduce((s, r) => s + r.currentM3, 0).toFixed(2)} M³
             </div>
-            <div className="flex flex-1 items-center gap-1 rounded-lg bg-slate-800 px-2 py-1.5 text-[10px] text-slate-400">
-              <Weight className="h-3 w-3 text-amber-400" />
+            <div className="flex flex-1 items-center gap-1 rounded-lg bg-slate-50 border border-slate-200 px-2 py-1.5 text-[10px] text-slate-600">
+              <Weight className="h-3 w-3 text-amber-500" />
               {assignedRoutes.reduce((s, r) => s + r.currentKg, 0).toFixed(1)} Kg
             </div>
           </div>

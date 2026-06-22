@@ -6,27 +6,37 @@
 @tailwind utilities;
 
 @layer base {
+  /*
+   * Light-mode design tokens — forced regardless of OS color scheme.
+   * Based on the enterprise SaaS palette: slate-50 canvas, white panels,
+   * slate-200 borders, blue-600 accent.
+   */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --background: 210 40% 98%;        /* slate-50 */
+    --foreground: 222.2 47.4% 11.2%;  /* slate-900 */
+    --card: 0 0% 100%;                /* white */
+    --card-foreground: 222.2 47.4% 11.2%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
+    --popover-foreground: 222.2 47.4% 11.2%;
+    --primary: 221.2 83.2% 53.3%;    /* blue-600 */
     --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
+    --secondary: 210 40% 96.1%;      /* slate-100 */
     --secondary-foreground: 222.2 47.4% 11.2%;
     --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted-foreground: 215.4 16.3% 46.9%; /* slate-500 */
     --accent: 210 40% 96.1%;
     --accent-foreground: 222.2 47.4% 11.2%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
+    --border: 214.3 31.8% 91.4%;     /* slate-200 */
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    --radius: 0.375rem;              /* rounded-md */
+  }
+
+  /* Force light mode — ignore prefers-color-scheme */
+  html {
+    color-scheme: light;
   }
 }
 

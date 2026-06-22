@@ -4,7 +4,60 @@ import { DEPOT_COORDS, ROUTE_COLORS } from "./types";
 // ---------------------------------------------------------------------------
 // OSRM Table API — fetch NxN duration matrix from local OSRM instance
 // ---------------------------------------------------------------------------
-const OSRM_BASE = "http://20.187.66.251:5000";
+// Override via NEXT_PUBLIC_OSRM_URL in .env.local (e.g. http://localhost:5000)
+const OSRM_BASE =
+  process.env.NEXT_PUBLIC_OSRM_URL ?? "http://203.175.125.185:8001";
+
+// ---------------------------------------------------------------------------
+// Polyline simplification — Ramer–Douglas–Peucker
+// Reduces coordinate count to prevent browser/Leaflet freeze on large routes.
+// tolerance: ~0.0001° ≈ 10m accuracy tradeoff (imperceptible on city zoom)
+// ---------------------------------------------------------------------------
+function perpendicularDistance(
+  point: [number, number],
+  lineStart: [number, number],
+  lineEnd: [number, number]
+): number {
+  const [x, y] = point;
+  const [x1, y1] = lineStart;
+  const [x2, y2] = lineEnd;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  if (dx === 0 && dy === 0) return Math.hypot(x - x1, y - y1);
+  const t = ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy);
+  return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+}
+
+function rdpSimplify(
+  points: [number, number][],
+  tolerance: number
+): [number, number][] {
+  if (points.length <= 2) return points;
+  let maxDist = 0;
+  let maxIdx = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpendicularDistance(points[i], points[0], points[points.length - 1]);
+    if (d > maxDist) { maxDist = d; maxIdx = i; }
+  }
+  if (maxDist <= tolerance) return [points[0], points[points.length - 1]];
+  return [
+    ...rdpSimplify(points.slice(0, maxIdx + 1), tolerance),
+    ...rdpSimplify(points.slice(maxIdx), tolerance).slice(1),
+  ];
+}
+
+/**
+ * Simplify a GeoJSON [lng, lat] coordinate array using RDP.
+ * Tolerance ~0.0001° ≈ 11m — visually lossless at city zoom levels.
+ * Reduces 5 000-coord routes to ~200-400 pts, preventing Leaflet freeze.
+ */
+export function simplifyCoordinates(
+  coords: [number, number][],
+  tolerance = 0.0001
+): [number, number][] {
+  if (coords.length <= 2) return coords;
+  return rdpSimplify(coords, tolerance);
+}
 
 interface OsrmTableResponse {
   code: string;
