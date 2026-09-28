@@ -4,7 +4,7 @@ import { DEPOT_COORDS, ROUTE_COLORS } from "./types";
 // ---------------------------------------------------------------------------
 // OSRM Table API — fetch NxN duration matrix from local OSRM instance
 // ---------------------------------------------------------------------------
-const OSRM_BASE = "http://20.187.66.251:5000";
+const OSRM_BASE = "http://ficom.mayora.co.id:8081/osrm-api";
 
 interface OsrmTableResponse {
   code: string;

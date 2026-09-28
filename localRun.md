@@ -20,7 +20,7 @@ npm run dev
 
 Then open http://localhost:3000 in your browser.
 
-> You also need **OSRM running on port 5000** for routing geometry. If it's not running, route lines won't draw but the assignment will still work.
+> Routing geometry dan duration matrix menggunakan OSRM API Mayora di `http://ficom.mayora.co.id:8081/osrm-api`.
 
 ---
 

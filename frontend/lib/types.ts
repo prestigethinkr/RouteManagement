@@ -55,7 +55,9 @@ export interface AssignedRoute {
 }
 
 /** Depot coordinates — hardcoded area */
-export const DEPOT_COORDS = { lat: -6.163011, lng: 106.691112 };
+
+
+export const DEPOT_COORDS = { lat: -6.163886, lng: 106.690886 };
 /** Distinct route colors for multi-vehicle map rendering */
 export const ROUTE_COLORS = [
   "#2563eb", // blue

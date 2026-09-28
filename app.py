@@ -165,7 +165,7 @@ def solve_efficient_route(coords_json):
 
         # Coba tarik garis rute nyata via OSRM
         osrm_coords = ";".join([f"{lon},{lat}" for lat, lon in ordered_coords])
-        osrm_url = f"http://20.187.66.251:5000/route/v1/driving/{osrm_coords}?overview=full&geometries=geojson"
+        osrm_url = f"http://ficom.mayora.co.id:8081/osrm-api/route/v1/driving/{osrm_coords}?overview=full&geometries=geojson"
         
         try:
             response = requests.get(osrm_url, timeout=60)
@@ -186,7 +186,8 @@ def solve_efficient_route(coords_json):
         return None, f"❌ Terjadi kesalahan sistem: {str(e)}"
 
 # --- 4. Antarmuka UI Gradio ---
-with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald")) as app:
+custom_theme = gr.themes.Default(primary_hue="emerald")
+with gr.Blocks() as app:
     gr.Markdown("# 🌙 Peta Silaturahmi Lebaran Efisien by ALIF TOWEW (menggunakan TSP)")
     
     with gr.Row():
@@ -220,4 +221,4 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="emerald")) as app:
     )
 
 if __name__ == "__main__":
-    app.launch()
+    app.launch(theme=custom_theme)
