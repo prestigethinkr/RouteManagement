@@ -70,19 +70,23 @@ function formatDistance(km: number): string {
 }
 
 function getCvrpApiBase(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
   if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    if (process.env.NEXT_PUBLIC_API_URL && process.env.NEXT_PUBLIC_API_URL.startsWith("https://")) {
+      return process.env.NEXT_PUBLIC_API_URL;
+    }
     return "/api/cvrp";
   }
-  return "http://163.52.135.197:8000";
+  return process.env.NEXT_PUBLIC_API_URL || "http://163.52.135.197:8000";
 }
 
 function getOsrmApiBase(): string {
-  if (process.env.NEXT_PUBLIC_OSRM_API_URL) return process.env.NEXT_PUBLIC_OSRM_API_URL;
   if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    if (process.env.NEXT_PUBLIC_OSRM_API_URL && process.env.NEXT_PUBLIC_OSRM_API_URL.startsWith("https://")) {
+      return process.env.NEXT_PUBLIC_OSRM_API_URL;
+    }
     return "/api/osrm";
   }
-  return "http://ficom.mayora.co.id:8081/osrm-api";
+  return process.env.NEXT_PUBLIC_OSRM_API_URL || "http://ficom.mayora.co.id:8081/osrm-api";
 }
 
 // ---------------------------------------------------------------------------

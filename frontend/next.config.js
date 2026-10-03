@@ -10,6 +10,19 @@ const withPWA = require("@ducanh2912/next-pwa").default({
 });
 
 /** @type {import('next').NextConfig} */
-const nextConfig = {};
+const nextConfig = {
+  async rewrites() {
+    return [
+      {
+        source: "/api/cvrp/:path*",
+        destination: "http://163.52.135.197:8000/:path*",
+      },
+      {
+        source: "/api/osrm/:path*",
+        destination: "http://ficom.mayora.co.id:8081/osrm-api/:path*",
+      },
+    ];
+  },
+};
 
 module.exports = withPWA(nextConfig);

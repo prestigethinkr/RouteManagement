@@ -5,11 +5,13 @@ import { DEPOT_COORDS, ROUTE_COLORS } from "./types";
 // OSRM Table API — fetch NxN duration matrix from local OSRM instance
 // ---------------------------------------------------------------------------
 export function getOsrmBase(): string {
-  if (process.env.NEXT_PUBLIC_OSRM_API_URL) return process.env.NEXT_PUBLIC_OSRM_API_URL;
   if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    if (process.env.NEXT_PUBLIC_OSRM_API_URL && process.env.NEXT_PUBLIC_OSRM_API_URL.startsWith("https://")) {
+      return process.env.NEXT_PUBLIC_OSRM_API_URL;
+    }
     return "/api/osrm";
   }
-  return "http://ficom.mayora.co.id:8081/osrm-api";
+  return process.env.NEXT_PUBLIC_OSRM_API_URL || "http://ficom.mayora.co.id:8081/osrm-api";
 }
 
 interface OsrmTableResponse {
