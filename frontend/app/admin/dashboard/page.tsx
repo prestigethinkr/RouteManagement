@@ -517,6 +517,7 @@ export default function FleetDispatchPage() {
   }
 
   // Helper for SSE Streaming optimization
+  // Helper for SSE Streaming optimization
   async function streamOptimization(
     payload: any,
     onProgress: (stage: string, percent: number, logItem: SolverLogItem) => void
@@ -531,12 +532,47 @@ export default function FleetDispatchPage() {
       throw new Error(`AI Optimization service error: HTTP ${streamRes.status}`);
     }
 
+    const contentType = streamRes.headers.get("content-type") || "";
+    // If backend or proxy returned standard JSON instead of text/event-stream
+    if (contentType.includes("application/json")) {
+      const directData = await streamRes.json();
+      if (directData && directData.assigned_routes) {
+        return directData;
+      }
+    }
+
     const reader = streamRes.body?.getReader();
     if (!reader) throw new Error("Unable to read streaming response from backend");
 
     const decoder = new TextDecoder();
     let optimizedData: any = null;
     let buffer = "";
+
+    const parseChunkLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (trimmed.startsWith("data: ")) {
+        try {
+          const parsed = JSON.parse(trimmed.slice(6));
+          if (parsed.type === "log") {
+            onProgress(parsed.stage, parsed.percent, parsed);
+          } else if (parsed.type === "result") {
+            optimizedData = parsed.data;
+          } else if (parsed.type === "error") {
+            throw new Error(parsed.message);
+          }
+        } catch (e: any) {
+          if (e?.message && !e.message.includes("JSON")) throw e;
+        }
+      } else {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.assigned_routes) {
+            optimizedData = parsed;
+          }
+        } catch {}
+      }
+    };
 
     while (true) {
       const { value, done } = await reader.read();
@@ -547,26 +583,41 @@ export default function FleetDispatchPage() {
       buffer = lines.pop() || "";
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("data: ")) {
-          try {
-            const parsed = JSON.parse(trimmed.slice(6));
-            if (parsed.type === "log") {
-              onProgress(parsed.stage, parsed.percent, parsed);
-            } else if (parsed.type === "result") {
-              optimizedData = parsed.data;
-            } else if (parsed.type === "error") {
-              throw new Error(parsed.message);
-            }
-          } catch (e: any) {
-            if (e?.message && !e.message.includes("JSON")) throw e;
-          }
-        }
+        parseChunkLine(line);
+      }
+    }
+
+    // Process any remaining text in buffer after stream ends
+    if (buffer.trim()) {
+      for (const line of buffer.split("\n\n")) {
+        parseChunkLine(line);
+      }
+    }
+
+    // Graceful fallback: If stream closed before result (e.g. Netlify proxy timeout/cutoff),
+    // fetch directly via standard non-streaming POST
+    if (!optimizedData) {
+      onProgress("FALLBACK", 75, {
+        time: new Date().toLocaleTimeString("it-IT"),
+        stage: "FALLBACK",
+        percent: 75,
+        message: "Stream selesai tanpa data akhir, mengambil hasil kalkulasi via request langsung...",
+        level: "WARN",
+      });
+
+      const fallbackRes = await fetch(`${getCvrpApiBase()}/optimize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, stream: false }),
+      });
+
+      if (fallbackRes.ok) {
+        optimizedData = await fallbackRes.json();
       }
     }
 
     if (!optimizedData) {
-      throw new Error("No optimization result received from backend stream");
+      throw new Error("No optimization result received from backend stream or direct fallback");
     }
 
     return optimizedData;
