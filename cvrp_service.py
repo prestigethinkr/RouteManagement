@@ -621,6 +621,15 @@ def solve_cvrp(
             total_distance_km=round(total_dist_m / 1000, 2),
         ))
 
+    # Auto-TSP Polisher: Re-sequence assigned routes into smooth natural loops
+    assigned_routes = _polish_assigned_routes(
+        assigned_routes=assigned_routes,
+        outlets=outlets,
+        raw_durations=raw_durations,
+        raw_distances=raw_distances,
+        original_id_to_idx={o.id: i + 1 for i, o in enumerate(outlets)},
+    )
+
     # ── Filter out routes with low EPE if min_epe_threshold > 0 ──────
     assigned_routes, unassigned, pruned_count, pruned_ids = _filter_low_epe_routes(
         assigned_routes, vehicles, outlets, min_epe_threshold
@@ -1048,6 +1057,275 @@ def _expand_routes(
             cross_zone_swept_outlets=new_swept
         ))
     return expanded
+
+
+# ---------------------------------------------------------------------------
+# Auto-TSP Polisher & Single-Vehicle Re-Sequencing Engine
+# ---------------------------------------------------------------------------
+def solve_single_vehicle_tsp(duration_matrix: list[list[float]]) -> list[int]:
+    """
+    Fast, deterministic TSP heuristic with Depot (node 0) as start & return end.
+    Uses multi-start construction (Forward NN, Backward NN, Cheapest Insertion)
+    followed by 2-Opt and Or-Opt (Relocate) local search refinement.
+    Runs in < 2ms for N <= 50.
+    Returns: list of 1-indexed outlet indices, e.g. [3, 1, 2].
+    """
+    n = len(duration_matrix)
+    K = n - 1
+    if K <= 1:
+        return [1] if K == 1 else []
+    if K == 2:
+        cost1 = duration_matrix[0][1] + duration_matrix[1][2] + duration_matrix[2][0]
+        cost2 = duration_matrix[0][2] + duration_matrix[2][1] + duration_matrix[1][0]
+        return [1, 2] if cost1 <= cost2 else [2, 1]
+
+    best_tour: list[int] = []
+    best_cost = float("inf")
+
+    # 1. Forward Nearest Neighbor starting from depot 0
+    unvisited = set(range(1, K + 1))
+    curr = 0
+    nn_fwd: list[int] = []
+    while unvisited:
+        nxt = min(unvisited, key=lambda node: duration_matrix[curr][node])
+        nn_fwd.append(nxt)
+        unvisited.remove(nxt)
+        curr = nxt
+
+    # 2. Backward Nearest Neighbor to depot 0
+    unvisited = set(range(1, K + 1))
+    curr = 0
+    nn_bwd: list[int] = []
+    while unvisited:
+        prev = min(unvisited, key=lambda node: duration_matrix[node][curr])
+        nn_bwd.append(prev)
+        unvisited.remove(prev)
+        curr = prev
+    nn_bwd.reverse()
+
+    # 3. Cheapest Insertion Tour
+    unvisited = set(range(1, K + 1))
+    first = min(unvisited, key=lambda node: duration_matrix[0][node] + duration_matrix[node][0])
+    ci_tour = [0, first, 0]
+    unvisited.remove(first)
+    while unvisited:
+        best_node = None
+        best_pos = None
+        min_detour = float("inf")
+        for u in unvisited:
+            for i in range(len(ci_tour) - 1):
+                detour = duration_matrix[ci_tour[i]][u] + duration_matrix[u][ci_tour[i + 1]] - duration_matrix[ci_tour[i]][ci_tour[i + 1]]
+                if detour < min_detour:
+                    min_detour = detour
+                    best_node = u
+                    best_pos = i + 1
+        if best_node is not None and best_pos is not None:
+            ci_tour.insert(best_pos, best_node)
+            unvisited.remove(best_node)
+        else:
+            break
+    ci_nodes = ci_tour[1:-1]
+
+    for candidate in [nn_fwd, nn_bwd, ci_nodes]:
+        if len(candidate) == K:
+            c = duration_matrix[0][candidate[0]] + sum(duration_matrix[candidate[i]][candidate[i + 1]] for i in range(K - 1)) + duration_matrix[candidate[-1]][0]
+            if c < best_cost:
+                best_cost = c
+                best_tour = list(candidate)
+
+    if not best_tour:
+        best_tour = list(range(1, K + 1))
+
+    tour = best_tour
+
+    # Local search loop: 2-Opt and Relocate (Or-Opt-1)
+    improved = True
+    iterations = 0
+    while improved and iterations < 150:
+        improved = False
+        iterations += 1
+
+        # 2-Opt
+        for i in range(len(tour) - 1):
+            for j in range(i + 1, len(tour)):
+                p = 0 if i == 0 else tour[i - 1]
+                q = 0 if j == len(tour) - 1 else tour[j + 1]
+                cur_edges = duration_matrix[p][tour[i]] + duration_matrix[tour[j]][q]
+                new_edges = duration_matrix[p][tour[j]] + duration_matrix[tour[i]][q]
+                if new_edges < cur_edges - 1e-4:
+                    tour[i:j + 1] = reversed(tour[i:j + 1])
+                    improved = True
+                    break
+            if improved:
+                break
+
+        if improved:
+            continue
+
+        # Relocate (Or-Opt-1): Move node i to position j
+        for i in range(len(tour)):
+            node = tour[i]
+            prev_i = 0 if i == 0 else tour[i - 1]
+            next_i = 0 if i == len(tour) - 1 else tour[i + 1]
+            base_removal = duration_matrix[prev_i][next_i] - (duration_matrix[prev_i][node] + duration_matrix[node][next_i])
+
+            remaining = tour[:i] + tour[i + 1:]
+            for j in range(len(remaining) + 1):
+                p = 0 if j == 0 else remaining[j - 1]
+                q = 0 if j == len(remaining) else remaining[j]
+                add_cost = duration_matrix[p][node] + duration_matrix[node][q] - duration_matrix[p][q]
+                delta = base_removal + add_cost
+                if delta < -1e-4:
+                    tour = remaining[:j] + [node] + remaining[j:]
+                    improved = True
+                    break
+            if improved:
+                break
+
+    return tour
+
+
+def _group_route_stops(
+    outlet_ids: list[str],
+    outlet_by_id: dict[str, OutletIn],
+) -> list[list[str]]:
+    """
+    Group outlets within a single route into atomic clusters.
+    Outlets that share a non-empty group_payer_id or identical coordinates
+    must remain consecutively together.
+    Preserves the relative sequence of clusters as much as possible.
+    """
+    if not outlet_ids:
+        return []
+
+    parent = list(range(len(outlet_ids)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        root_i = find(i)
+        root_j = find(j)
+        if root_i != root_j:
+            if root_i < root_j:
+                parent[root_j] = root_i
+            else:
+                parent[root_i] = root_j
+
+    gp_to_first: dict[str, int] = {}
+    coord_to_first: dict[tuple[float, float], int] = {}
+
+    for idx, oid in enumerate(outlet_ids):
+        o = outlet_by_id.get(oid)
+        if not o:
+            continue
+        gp = str(o.grouppayer).strip() if o.grouppayer else ""
+        if gp:
+            if gp in gp_to_first:
+                union(idx, gp_to_first[gp])
+            else:
+                gp_to_first[gp] = idx
+
+        coord = (round(o.lat, 5), round(o.lng, 5))
+        if coord != (0.0, 0.0):
+            if coord in coord_to_first:
+                union(idx, coord_to_first[coord])
+            else:
+                coord_to_first[coord] = idx
+
+    groups: dict[int, list[str]] = defaultdict(list)
+    for idx, oid in enumerate(outlet_ids):
+        groups[find(idx)].append(oid)
+
+    sorted_roots = sorted(groups.keys())
+    return [groups[r] for r in sorted_roots]
+
+
+def _polish_assigned_routes(
+    assigned_routes: list[AssignedRouteOut],
+    outlets: list[OutletIn],
+    raw_durations: list[list[float]],
+    raw_distances: list[list[float]],
+    original_id_to_idx: dict[str, int],
+) -> list[AssignedRouteOut]:
+    """
+    Auto-TSP Polisher for all assigned routes.
+    Runs on pure OSRM road travel times with GroupPayer & co-location atomicity.
+    Re-orders each route into a smooth, natural loop without sub-optimal middle-route fringe detours.
+    """
+    outlet_by_id = {o.id: o for o in outlets}
+    polished_routes: list[AssignedRouteOut] = []
+    reordered_count = 0
+    total_time_saved_s = 0.0
+
+    for route in assigned_routes:
+        if len(route.route) <= 1:
+            polished_routes.append(route)
+            continue
+
+        clusters = _group_route_stops(route.route, outlet_by_id)
+        K = len(clusters)
+
+        if K <= 1:
+            polished_order = [oid for c in clusters for oid in c]
+        elif K == 2:
+            c0_idx = original_id_to_idx.get(clusters[0][0], 0)
+            c1_idx = original_id_to_idx.get(clusters[1][0], 0)
+            cost1 = raw_durations[0][c0_idx] + raw_durations[c0_idx][c1_idx] + raw_durations[c1_idx][0]
+            cost2 = raw_durations[0][c1_idx] + raw_durations[c1_idx][c0_idx] + raw_durations[c0_idx][0]
+            chosen_clusters = [clusters[0], clusters[1]] if cost1 <= cost2 else [clusters[1], clusters[0]]
+            polished_order = [oid for c in chosen_clusters for oid in c]
+        else:
+            cluster_indices = [original_id_to_idx.get(c[0], 0) for c in clusters]
+            c_matrix: list[list[float]] = [[0.0] * (K + 1) for _ in range(K + 1)]
+            for k in range(K):
+                orig_k = cluster_indices[k]
+                c_matrix[0][k + 1] = raw_durations[0][orig_k]
+                c_matrix[k + 1][0] = raw_durations[orig_k][0]
+            for j in range(K):
+                for k in range(K):
+                    if j != k:
+                        c_matrix[j + 1][k + 1] = raw_durations[cluster_indices[j]][cluster_indices[k]]
+
+            tour = solve_single_vehicle_tsp(c_matrix)
+            polished_order = []
+            for t in tour:
+                if 1 <= t <= len(clusters):
+                    polished_order.extend(clusters[t - 1])
+
+        # Safety fallback
+        if len(polished_order) != len(route.route):
+            polished_order = route.route
+
+        route_seq = [0] + [original_id_to_idx[oid] for oid in polished_order if oid in original_id_to_idx] + [0]
+        new_dur_s = sum(raw_durations[route_seq[i]][route_seq[i + 1]] for i in range(len(route_seq) - 1))
+        new_dist_m = sum(raw_distances[route_seq[i]][route_seq[i + 1]] for i in range(len(route_seq) - 1))
+
+        if polished_order != route.route:
+            reordered_count += 1
+            if route.total_duration_s > new_dur_s:
+                total_time_saved_s += (route.total_duration_s - new_dur_s)
+
+        swept = [oid for oid in route.cross_zone_swept_outlets if oid in polished_order]
+
+        polished_routes.append(AssignedRouteOut(
+            vehicle_id=route.vehicle_id,
+            total_m3=route.total_m3,
+            total_kg=route.total_kg,
+            route=polished_order,
+            total_duration_s=round(new_dur_s, 1),
+            total_distance_km=round(new_dist_m / 1000.0, 2),
+            cross_zone_swept_outlets=swept,
+        ))
+
+    log.info(
+        "Auto-TSP Polisher: Re-sequenced %d / %d active routes into natural loops (saved %.1fs travel time)",
+        reordered_count, len(assigned_routes), total_time_saved_s,
+    )
+    return polished_routes
 
 
 def _compute_spatial_clusters(outlets: list[OutletIn]) -> list[str]:
@@ -1761,6 +2039,17 @@ def solve_cvrp_matrix(
     # ── Step 4: Expand grouppayer super-nodes back to individual outlet IDs ─
     all_assigned_routes = _expand_routes(all_assigned_routes, expansion_map)
 
+    # ── Step 4.5: Auto-TSP Polisher on expanded routes ────────────────
+    if progress_cb:
+        progress_cb("POLISH", 87, f"Auto-TSP Polisher: Re-sequencing {len(all_assigned_routes)} routes into natural loops...")
+    all_assigned_routes = _polish_assigned_routes(
+        assigned_routes=all_assigned_routes,
+        outlets=outlets,
+        raw_durations=raw_durations,
+        raw_distances=raw_distances,
+        original_id_to_idx=original_id_to_idx,
+    )
+
     # Expand unassigned super-nodes/split-nodes back to member IDs
     expanded_unassigned: list[str] = []
     for oid in all_unassigned_outlets:
@@ -2229,50 +2518,8 @@ async def optimize(payload: OptimizeRequest):
 
 
 # ---------------------------------------------------------------------------
-# Lightweight Single-Vehicle TSP Re-Sequencing (< 1 second)
+# Lightweight Single-Vehicle Route Re-Order Models & Endpoint
 # ---------------------------------------------------------------------------
-def solve_single_vehicle_tsp(duration_matrix: list[list[float]]) -> list[int]:
-    """
-    Fast, deterministic TSP heuristic with Depot (node 0) as start & return end.
-    Uses Nearest Neighbor initialization + 2-Opt local search refinement.
-    Runs in < 2ms for N <= 50.
-    Returns: list of 1-indexed outlet indices, e.g. [3, 1, 2].
-    """
-    n = len(duration_matrix)
-    if n <= 2:
-        return [1] if n == 2 else []
-
-    # Nearest Neighbor starting from depot 0
-    unvisited = set(range(1, n))
-    current = 0
-    tour: list[int] = []
-    while unvisited:
-        nearest = min(unvisited, key=lambda node: duration_matrix[current][node])
-        tour.append(nearest)
-        unvisited.remove(nearest)
-        current = nearest
-
-    # 2-Opt optimization with fixed start (0) and end (0)
-    improved = True
-    iterations = 0
-    while improved and iterations < 100:
-        improved = False
-        iterations += 1
-        for i in range(len(tour) - 1):
-            for j in range(i + 1, len(tour)):
-                prev_i = 0 if i == 0 else tour[i - 1]
-                next_j = 0 if j == len(tour) - 1 else tour[j + 1]
-
-                current_cost = duration_matrix[prev_i][tour[i]] + duration_matrix[tour[j]][next_j]
-                new_cost = duration_matrix[prev_i][tour[j]] + duration_matrix[tour[i]][next_j]
-
-                if new_cost < current_cost - 1e-4:
-                    tour[i:j + 1] = reversed(tour[i:j + 1])
-                    improved = True
-                    break
-            if improved:
-                break
-    return tour
 
 
 @app.post("/routes/reorder", response_model=RouteReorderResponse)
