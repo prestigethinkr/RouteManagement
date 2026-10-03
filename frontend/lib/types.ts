@@ -41,6 +41,7 @@ export interface PendingOutlet {
   kelurahan?: string;
   alamat?: string;
   is_cross_zone_swept?: boolean;
+  is_zone_inferred?: boolean;
 }
 
 /** A single vehicle from the fleet upload */
@@ -72,7 +73,7 @@ export interface AssignedRoute {
 }
 
 /** Depot coordinates — hardcoded area */
-export const DEPOT_COORDS = { lat: -6.224633, lng: 106.523318 };
+export const DEPOT_COORDS = { lat: -6.224696, lng: 106.523337 };
 /** Distinct route colors for multi-vehicle map rendering */
 export const ROUTE_COLORS = [
   "#2563eb", // blue

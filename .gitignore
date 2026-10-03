@@ -31,3 +31,9 @@ yarn-error.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Test Data & Temporary Office / Lock Files
+~$*
+*.tmp
+TEST DATA/
+

@@ -241,6 +241,8 @@ interface MapRouteProps {
   isEditorOpen?: boolean;
   /** Vehicle ID currently being edited in Route Editor Drawer */
   focusedVehicleId?: string | null;
+  /** Configurable depot coordinates */
+  depotCoords?: { lat: number; lng: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,9 +257,11 @@ function MapRouteComponent({
   selectedVehicleRoute,
   isEditorOpen,
   focusedVehicleId,
+  depotCoords,
 }: MapRouteProps) {
   const markerRefs = useRef<Record<string, L.Marker>>({});
-  const depotPos: [number, number] = [DEPOT_COORDS.lat, DEPOT_COORDS.lng];
+  const activeDepot = depotCoords ?? DEPOT_COORDS;
+  const depotPos: [number, number] = [activeDepot.lat, activeDepot.lng];
   const isPreviewMode = routes.length === 0 && (pendingOutlets?.length ?? 0) > 0;
 
   // Proximity Calculation: Find nearest stop of selectedVehicleRoute to focusedUnassignedOutlet
@@ -267,12 +271,12 @@ function MapRouteComponent({
       const dist = haversineKm(
         focusedUnassignedOutlet.lat,
         focusedUnassignedOutlet.lng,
-        DEPOT_COORDS.lat,
-        DEPOT_COORDS.lng
+        activeDepot.lat,
+        activeDepot.lng
       );
       return {
-        lat: DEPOT_COORDS.lat,
-        lng: DEPOT_COORDS.lng,
+        lat: activeDepot.lat,
+        lng: activeDepot.lng,
         outletName: "Depot / Warehouse",
         vehicleNoKend: selectedVehicleRoute.vehicle.NO_KEND,
         distanceKm: dist,
@@ -388,7 +392,7 @@ function MapRouteComponent({
           <strong>Depot / Warehouse</strong>
           <br />
           <span style={{ fontSize: 11, color: "#666" }}>
-            {DEPOT_COORDS.lat.toFixed(4)}, {DEPOT_COORDS.lng.toFixed(4)}
+            {activeDepot.lat.toFixed(4)}, {activeDepot.lng.toFixed(4)}
           </span>
         </Popup>
       </Marker>

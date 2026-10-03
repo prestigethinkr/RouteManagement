@@ -157,13 +157,15 @@ export function greedyAssign(
 const ROUTE_CHUNK_SIZE = 50; // max waypoints per Route API call
 
 export async function fetchTripRoute(
-  outlets: PendingOutlet[]
+  outlets: PendingOutlet[],
+  depotCoords?: { lat: number; lng: number }
 ): Promise<GeoJsonLineString | null> {
   if (outlets.length === 0) return null;
 
+  const activeDepot = depotCoords ?? DEPOT_COORDS;
   // Build ordered waypoint strings: depot first, then outlets in sequence
   const waypoints: string[] = [
-    `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+    `${activeDepot.lng},${activeDepot.lat}`,
     ...outlets.map((o) => `${o.lng},${o.lat}`),
   ];
 

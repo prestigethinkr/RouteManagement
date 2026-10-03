@@ -151,6 +151,31 @@ export default function FleetDispatchPage() {
   // --- Min EPE Threshold (%) for Multi-Trip (Trip 2 & 3) Route Pruning ---
   const [minEpeTrip23Threshold, setMinEpeTrip23Threshold] = useState(50);
 
+  // --- Depot Coordinates (Configurable by user, persisted in localStorage) ---
+  const [depotCoords, setDepotCoords] = useState<{ lat: number; lng: number }>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("cvrp_depot_coords");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (
+            typeof parsed.lat === "number" &&
+            typeof parsed.lng === "number" &&
+            !isNaN(parsed.lat) &&
+            !isNaN(parsed.lng)
+          ) {
+            return parsed;
+          }
+        }
+      } catch {
+        // fallback to DEPOT_COORDS
+      }
+    }
+    return DEPOT_COORDS;
+  });
+  const [depotLatStr, setDepotLatStr] = useState<string>(() => String(depotCoords.lat));
+  const [depotLngStr, setDepotLngStr] = useState<string>(() => String(depotCoords.lng));
+
   // --- Real-time Solver Console & Progress ---
   const [solverLogs, setSolverLogs] = useState<SolverLogItem[]>([]);
   const [solverProgress, setSolverProgress] = useState(0);
@@ -196,7 +221,7 @@ export default function FleetDispatchPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          depot: { lat: DEPOT_COORDS.lat, lng: DEPOT_COORDS.lng },
+          depot: { lat: depotCoords.lat, lng: depotCoords.lng },
           vehicle_id: vehicleId,
           outlets: currentOutlets.map((o) => ({
             id: o.custno,
@@ -620,7 +645,7 @@ export default function FleetDispatchPage() {
     try {
       const useMatrix = selectedAlgorithm === "matrix";
       const payload = {
-        depot: { lat: DEPOT_COORDS.lat, lng: DEPOT_COORDS.lng },
+        depot: { lat: depotCoords.lat, lng: depotCoords.lng },
         outlets: pendingOutlets.map((o) => ({
           id: o.custno,
           lat: o.lat,
@@ -730,9 +755,9 @@ export default function FleetDispatchPage() {
             }));
 
           const rawCoords = [
-            `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+            `${depotCoords.lng},${depotCoords.lat}`,
             ...orderedOutlets.map((o) => `${o.lng},${o.lat}`),
-            `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+            `${depotCoords.lng},${depotCoords.lat}`,
           ];
           const coordsString = rawCoords.join(";");
 
@@ -992,7 +1017,7 @@ export default function FleetDispatchPage() {
       }
 
       const payload = {
-        depot: { lat: DEPOT_COORDS.lat, lng: DEPOT_COORDS.lng },
+        depot: { lat: depotCoords.lat, lng: depotCoords.lng },
         outlets: unassignedOutlets.map((o) => ({
           id: o.custno,
           lat: o.lat,
@@ -1095,9 +1120,9 @@ export default function FleetDispatchPage() {
             .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined);
 
           const rawCoords = [
-            `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+            `${depotCoords.lng},${depotCoords.lat}`,
             ...orderedOutlets.map((o) => `${o.lng},${o.lat}`),
-            `${DEPOT_COORDS.lng},${DEPOT_COORDS.lat}`,
+            `${depotCoords.lng},${depotCoords.lat}`,
           ];
           const coordsString = rawCoords.join(";");
 
@@ -1240,6 +1265,7 @@ export default function FleetDispatchPage() {
             selectedVehicleRoute={selectedEditorRoute}
             isEditorOpen={isRouteEditorOpen}
             focusedVehicleId={isRouteEditorOpen ? (editorVehicleId || selectedEditorRoute?.vehicle.NO_KEND) : null}
+            depotCoords={depotCoords}
           />
         ) : (
           <MapRoute
@@ -1250,6 +1276,7 @@ export default function FleetDispatchPage() {
             selectedVehicleRoute={selectedEditorRoute}
             isEditorOpen={isRouteEditorOpen}
             focusedVehicleId={isRouteEditorOpen ? (editorVehicleId || selectedEditorRoute?.vehicle.NO_KEND) : null}
+            depotCoords={depotCoords}
           />
         )}
       </div>
@@ -1987,6 +2014,96 @@ export default function FleetDispatchPage() {
               </div>
               <UploadCloud className="h-4 w-4 shrink-0 text-slate-400" />
             </button>
+          </div>
+
+          {/* Depot Location Input */}
+          <div className="space-y-1.5 pt-2 border-t border-slate-100">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                📍 Depot Coordinates
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setDepotCoords(DEPOT_COORDS);
+                  setDepotLatStr(String(DEPOT_COORDS.lat));
+                  setDepotLngStr(String(DEPOT_COORDS.lng));
+                  try {
+                    localStorage.setItem("cvrp_depot_coords", JSON.stringify(DEPOT_COORDS));
+                  } catch {}
+                }}
+                className="text-[10px] font-semibold text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
+                title="Reset to default depot coordinates"
+              >
+                Reset Default
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-semibold text-slate-500 mb-0.5 block">Latitude</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={depotLatStr}
+                  onChange={(e) => {
+                    const text = e.target.value;
+                    setDepotLatStr(text);
+                    const parsed = parseFloat(text);
+                    if (!isNaN(parsed) && parsed >= -90 && parsed <= 90) {
+                      setDepotCoords((prev) => {
+                        const updated = { ...prev, lat: parsed };
+                        try {
+                          localStorage.setItem("cvrp_depot_coords", JSON.stringify(updated));
+                        } catch {}
+                        return updated;
+                      });
+                    }
+                  }}
+                  onBlur={() => {
+                    const parsed = parseFloat(depotLatStr);
+                    if (isNaN(parsed) || parsed < -90 || parsed > 90) {
+                      setDepotLatStr(String(depotCoords.lat));
+                    }
+                  }}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-800 font-mono outline-none focus:border-blue-500 focus:bg-white"
+                  placeholder="-6.224696"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold text-slate-500 mb-0.5 block">Longitude</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={depotLngStr}
+                  onChange={(e) => {
+                    const text = e.target.value;
+                    setDepotLngStr(text);
+                    const parsed = parseFloat(text);
+                    if (!isNaN(parsed) && parsed >= -180 && parsed <= 180) {
+                      setDepotCoords((prev) => {
+                        const updated = { ...prev, lng: parsed };
+                        try {
+                          localStorage.setItem("cvrp_depot_coords", JSON.stringify(updated));
+                        } catch {}
+                        return updated;
+                      });
+                    }
+                  }}
+                  onBlur={() => {
+                    const parsed = parseFloat(depotLngStr);
+                    if (isNaN(parsed) || parsed < -180 || parsed > 180) {
+                      setDepotLngStr(String(depotCoords.lng));
+                    }
+                  }}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-800 font-mono outline-none focus:border-blue-500 focus:bg-white"
+                  placeholder="106.523337"
+                />
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-500 leading-tight">
+              Koordinat titik awal dan akhir rute armada (DC / Gudang).
+            </p>
           </div>
 
           {/* Operational Constraints Mode Selector */}

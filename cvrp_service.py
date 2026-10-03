@@ -122,34 +122,38 @@ class OutletIn(BaseModel):
     m3: float = Field(..., ge=0, description="Volume in cubic metres")
     kg: float = Field(..., ge=0, description="Weight in kilograms")
     # Optional rich fields — used for Excel export; ignored by the solver
-    custname: str = ""
-    jns_kend: str = ""
+    custname: str | None = ""
+    jns_kend: str | None = ""
     invoices: list[InvoiceIn] = Field(default_factory=list)
     # ── Matrix constraint fields (optional — only used when use_matrix_constraints=true) ──
     allowed_vehicles: list[str] = Field(
         default_factory=list,
         description="If non-empty, only these vehicle IDs or vehicle types may serve this outlet",
     )
-    grouppayer: str = Field(
+    grouppayer: str | None = Field(
         default="",
         description="Group-payer ID — outlets sharing the same value MUST ride the same vehicle",
     )
-    zone: str = Field(
+    zone: str | None = Field(
         default="",
         description="Territory zone tag (e.g., 'GROUP1') for geographic vehicle matching",
     )
-    kecamatan: str = ""
-    kelurahan: str = ""
-    alamat: str = ""
+    is_zone_inferred: bool = Field(
+        default=False,
+        description="Flag indicating if the outlet zone was inferred via spatial proximity",
+    )
+    kecamatan: str | None = ""
+    kelurahan: str | None = ""
+    alamat: str | None = ""
 
 
 class VehicleIn(BaseModel):
     id: str
     max_m3: float = Field(..., gt=0)
     max_kg: float = Field(..., gt=0)
-    jns_kend: str = ""  # Vehicle type label — used for Excel export; ignored by the solver
+    jns_kend: str | None = ""  # Vehicle type label — used for Excel export; ignored by the solver
     # ── Matrix constraint fields (optional) ──
-    zones: list[str] = Field(
+    zones: list[str] | None = Field(
         default_factory=list,
         description="Territory zones this vehicle can serve (e.g., ['GROUP1','GROUP2'])",
     )
@@ -641,6 +645,150 @@ def solve_cvrp(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Geodesic Distance Helper & Spatial Zone Fallback System
+# ---------------------------------------------------------------------------
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Fast spherical distance in meters between two lat/lng coordinates."""
+    R = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+    return 2.0 * R * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def is_valid_zone(z: str | None) -> bool:
+    """Check if a zone string is a valid, mapped district tag."""
+    if not z or not isinstance(z, str):
+        return False
+    clean = z.strip().upper()
+    return clean not in {"", "UNMAPPED", "UNZONED", "NONE", "NULL", "NAN", "ZONE_UNKNOWN", "UNKNOWN"}
+
+
+def _infer_orphan_zones(
+    outlets: list[OutletIn],
+    inference_radius_km: float = 5.0,
+) -> tuple[int, int, int]:
+    """
+    Scan all outlets and spatially infer zones for unmapped/orphan outlets (Tier 1).
+    1. GroupPayer Zone Harmonization: If outlets share a grouppayer and at least one
+       has a valid zone, propagate that valid zone to all other members.
+    2. Spatial Nearest Neighbor Inference: For remaining unmapped outlets, find the
+       nearest mapped outlet. If distance <= inference_radius_km (5.0 km),
+       auto-assign outlet.zone = nearest_zone and is_zone_inferred = True.
+       If distance > inference_radius_km (or invalid GPS coordinates), assign
+       outlet.zone = 'ZONE_UNKNOWN'.
+
+    Returns: (originally_mapped_count, inferred_count, unknown_count)
+    """
+    originally_mapped_count = sum(1 for o in outlets if is_valid_zone(o.zone))
+
+    # 1. GroupPayer Zone Harmonization
+    gp_to_valid_zone: dict[str, str] = {}
+    for o in outlets:
+        gp = (o.grouppayer or "").strip()
+        if gp and is_valid_zone(o.zone):
+            gp_to_valid_zone[gp] = o.zone.strip()
+
+    for o in outlets:
+        gp = (o.grouppayer or "").strip()
+        if gp in gp_to_valid_zone and not is_valid_zone(o.zone):
+            o.zone = gp_to_valid_zone[gp]
+            o.is_zone_inferred = True
+
+    # 2. Gather all mapped outlets with valid coordinates
+    mapped_pts: list[tuple[float, float, str]] = []
+    for o in outlets:
+        if is_valid_zone(o.zone):
+            o.zone = o.zone.strip()
+            if not (abs(o.lat) < 0.001 and abs(o.lng) < 0.001):
+                mapped_pts.append((o.lat, o.lng, o.zone))
+
+    radius_m = inference_radius_km * 1000.0
+    inferred_count = 0
+    unknown_count = 0
+
+    for o in outlets:
+        if is_valid_zone(o.zone):
+            if getattr(o, "is_zone_inferred", False):
+                inferred_count += 1
+            continue
+
+        # Invalid coordinates check (GPS missing / 0,0)
+        if (abs(o.lat) < 0.001 and abs(o.lng) < 0.001) or not mapped_pts:
+            o.zone = "ZONE_UNKNOWN"
+            o.is_zone_inferred = False
+            unknown_count += 1
+            continue
+
+        # Find nearest mapped outlet
+        best_dist_m = float("inf")
+        best_zone = ""
+        for m_lat, m_lng, m_zone in mapped_pts:
+            d_m = haversine_m(o.lat, o.lng, m_lat, m_lng)
+            if d_m < best_dist_m:
+                best_dist_m = d_m
+                best_zone = m_zone
+                if best_dist_m < 50.0:  # Early stop if practically same location
+                    break
+
+        if best_dist_m <= radius_m and best_zone:
+            o.zone = best_zone
+            o.is_zone_inferred = True
+            inferred_count += 1
+        else:
+            o.zone = "ZONE_UNKNOWN"
+            o.is_zone_inferred = False
+            unknown_count += 1
+
+    return originally_mapped_count, inferred_count, unknown_count
+
+
+def _normalize_vehicles(
+    vehicles: list[VehicleIn],
+) -> tuple[dict[str, list[VehicleIn]], list[VehicleIn]]:
+    """
+    Normalize vehicle zones (Tier 2) and partition into dedicated zoned vs wildcard float fleet.
+    1. Any vehicle with empty, null, or whitespace-only zones is normalized to zones = ["ALL"].
+    2. Vehicles with "ALL", "WILDCARD", "FLOAT", or "*" in zones are placed in the shared float fleet pool.
+    3. Vehicles with dedicated zones are mapped to their primary territory zone.
+    4. Physical duplicate vehicles are deduplicated deterministically.
+
+    Returns: (vehicles_by_zone, float_vehicles)
+    """
+    def _base_vid(vid: str) -> str:
+        return re.sub(r"\s*\(?(?:Trip|Ritase)\s*\d+\)?", "", str(vid), flags=re.IGNORECASE).strip()
+
+    vehicles_by_zone: dict[str, list[VehicleIn]] = defaultdict(list)
+    float_vehicles: list[VehicleIn] = []
+    assigned_base_vids: set[str] = set()
+
+    for v in sorted(vehicles, key=lambda x: str(x.id)):
+        base_id = _base_vid(v.id)
+        if base_id in assigned_base_vids:
+            log.warning("Duplicate physical vehicle %s (id=%s) skipped in zone assignment", base_id, v.id)
+            continue
+        assigned_base_vids.add(base_id)
+
+        # Normalize zones list
+        if not v.zones:
+            v.zones = ["ALL"]
+        else:
+            clean_z = [str(z).strip() for z in v.zones if str(z).strip()]
+            v.zones = clean_z if clean_z else ["ALL"]
+
+        # Check if wildcard float vehicle
+        is_float = any(z.upper() in {"ALL", "WILDCARD", "FLOAT", "*"} for z in v.zones)
+        if is_float:
+            float_vehicles.append(v)
+        else:
+            primary = v.zones[0].strip()
+            vehicles_by_zone[primary].append(v)
+
+    return vehicles_by_zone, float_vehicles
+
+
 def split_oversized_demands(
     outlets: list[OutletIn],
     max_fleet_m3: float = float("inf"),
@@ -783,6 +931,7 @@ def split_oversized_demands(
                     allowed_vehicles=list(all_allowed),
                     grouppayer=gp_id,
                     zone=anchor.zone,
+                    is_zone_inferred=anchor.is_zone_inferred,
                 )
                 processed_outlets.append(super_node)
                 expansion_map[super_node.id] = members
@@ -811,6 +960,7 @@ def split_oversized_demands(
                     allowed_vehicles=list(all_allowed),
                     grouppayer=gp_id,
                     zone=anchor.zone,
+                    is_zone_inferred=anchor.is_zone_inferred,
                 )
                 processed_outlets.append(split_node)
                 expansion_map[node_id] = assigned_members
@@ -841,6 +991,7 @@ def split_oversized_demands(
                     allowed_vehicles=o.allowed_vehicles,
                     grouppayer=o.grouppayer,
                     zone=o.zone,
+                    is_zone_inferred=o.is_zone_inferred,
                 )
                 processed_outlets.append(split_node)
                 expansion_map[node_id] = assigned_members
@@ -1241,7 +1392,8 @@ def _cross_district_sweeper(
     raw_durations: list[list[float]],
     original_id_to_idx: dict[str, int],
     expansion_map: dict[str, list[OutletIn]],
-    max_detour_s: int = 1200
+    max_detour_s: int = 1200,
+    max_stops: int = 50,
 ) -> tuple[list[AssignedRouteOut], list[str]]:
     """
     Phase 2 Post-Processing: Cross-District Border Sweeper.
@@ -1280,6 +1432,9 @@ def _cross_district_sweeper(
                 continue
                 
             if route.total_m3 + u_node.m3 > v.max_m3 or route.total_kg + u_node.kg > v.max_kg:
+                continue
+                
+            if max_stops > 0 and len(route.route) >= max_stops:
                 continue
                 
             is_compatible = True
@@ -1350,15 +1505,36 @@ def solve_cvrp_matrix(
 ) -> tuple[list[AssignedRouteOut], list[str], int, set[str], list[OutletIn], dict[str, list[OutletIn]]]:
     """
     Solve the CVRP with Matrix ERP operational constraints applied using
-    Per-District / Zone Partitioning Architecture.
+    Per-District / Zone Partitioning Architecture with a 3-Tier Fallback System:
 
-    1. Group Payer & SDVRP consolidation (splits oversized nodes <= max truck capacity).
-    2. Partition: Group outlets and vehicles strictly by their respective zone / district.
-    3. Independent Solver Instances: Each district is solved with dynamic time & solution
-       limits, eliminating premature search cutoffs on tail vehicles.
-    4. Aggregation & Pruning: All routes and unassigned outlets are aggregated and
-       filtered through Min EPE Pruning.
+    Tier 1: Preprocessing: Spatial Inference for Unmapped / Orphan Outlets.
+    Tier 2: Preprocessing: Fleet Float Normalization & Partitioning.
+    Tier 3 / Phase A: Standard District Solves with Float Fleet Drafting for Overloaded Districts.
+    Tier 3 / Phase B: ZONE_UNKNOWN & Orphan Resolution using Remaining Float Fleet.
+    Tier 3 / Phase C: Phase 2 Post-Processing Cross-District Sweeper.
+    Step 4: GroupPayer & SDVRP Expansion.
+    Step 5: Min EPE Route Pruning.
     """
+    # ── Tier 1: Spatial Inference for Unmapped Outlets ─────────────────
+    orig_mapped, inferred_cnt, unknown_cnt = _infer_orphan_zones(outlets, inference_radius_km=5.0)
+
+    # ── Tier 2: Float Fleet Normalization ───────────────────────────────
+    vehicles_by_zone, float_vehicles = _normalize_vehicles(vehicles)
+    dedicated_count = sum(len(vl) for vl in vehicles_by_zone.values())
+    float_count = len(float_vehicles)
+
+    # ── Diagnostics Summary Logging ────────────────────────────────────
+    log.info(
+        "3-Tier Master Data Audit: %d outlets (%d originally mapped, %d inferred to zones, %d ZONE_UNKNOWN) | Fleet: %d dedicated across %d zones, %d wildcard float",
+        len(outlets), orig_mapped, inferred_cnt, unknown_cnt, dedicated_count, len(vehicles_by_zone), float_count
+    )
+    if progress_cb:
+        progress_cb(
+            "MATRIX",
+            41,
+            f"Master Data: {orig_mapped} mapped, {inferred_cnt} inferred to zones, {unknown_cnt} ZONE_UNKNOWN | Fleet: {dedicated_count} dedicated, {float_count} float"
+        )
+
     # ── Step 1: Preprocessing & GroupPayer / SDVRP consolidation ───────
     if progress_cb:
         progress_cb("MATRIX", 42, f"GroupPayer: Preprocessing {len(outlets)} outlets...")
@@ -1373,56 +1549,77 @@ def solve_cvrp_matrix(
     # ── Step 2: Zone Partitioning ──────────────────────────────────────
     outlets_by_zone: dict[str, list[OutletIn]] = defaultdict(list)
     for mo in merged_outlets:
-        z = (mo.zone or "").strip() or "UNZONED"
+        z = (mo.zone or "").strip()
+        if not is_valid_zone(z):
+            z = "ZONE_UNKNOWN"
         outlets_by_zone[z].append(mo)
 
-    # Vehicles partitioned by primary zone (avoid duplicate dispatch of same physical vehicle)
-    def _base_vid(vid: str) -> str:
-        return re.sub(r"\s*\(?(?:Trip|Ritase)\s*\d+\)?", "", str(vid), flags=re.IGNORECASE).strip()
-
-    vehicles_by_zone: dict[str, list[VehicleIn]] = defaultdict(list)
-    assigned_base_vids: set[str] = set()
-    for v in sorted(vehicles, key=lambda x: str(x.id)):
-        base_id = _base_vid(v.id)
-        if base_id in assigned_base_vids:
-            log.warning("Duplicate physical vehicle %s (id=%s) skipped in zone assignment", base_id, v.id)
-            continue
-        assigned_base_vids.add(base_id)
-        if v.zones:
-            primary = v.zones[0].strip()
-            if primary.upper() == "ALL":
-                vehicles_by_zone["UNZONED"].append(v)
-            else:
-                vehicles_by_zone[primary].append(v)
-        else:
-            vehicles_by_zone["UNZONED"].append(v)
-
-    named_zones = sorted([z for z in outlets_by_zone.keys() if z != "UNZONED"])
-    zone_list = named_zones + (["UNZONED"] if "UNZONED" in outlets_by_zone else [])
-    total_zones = len(zone_list)
+    named_zones = sorted([z for z in outlets_by_zone.keys() if z != "ZONE_UNKNOWN"])
+    total_phases = len(named_zones) + (1 if "ZONE_UNKNOWN" in outlets_by_zone and outlets_by_zone["ZONE_UNKNOWN"] else 0)
 
     log.info(
-        "Per-District CVRP: Partitioned %d solver nodes across %d zones (%d vehicles available)",
-        len(merged_outlets), total_zones, len(vehicles),
+        "Per-District CVRP: Partitioned %d solver nodes across %d named zones + ZONE_UNKNOWN=%d (%d dedicated vehicles, %d float vehicles)",
+        len(merged_outlets), len(named_zones), len(outlets_by_zone.get("ZONE_UNKNOWN", [])), dedicated_count, float_count,
     )
 
     all_assigned_routes: list[AssignedRouteOut] = []
     all_unassigned_outlets: list[str] = []
+    available_float_vehicles = list(float_vehicles)
 
-    # ── Step 3: Solve Each District Independently ──────────────────────
-    for zone_idx, zone_name in enumerate(zone_list, start=1):
+    # ── Tier 3 / Phase A: Standard District Solves + Float Fleet Drafting ─
+    for zone_idx, zone_name in enumerate(named_zones, start=1):
         z_outlets = sorted(outlets_by_zone[zone_name], key=lambda o: str(o.id))
-        z_vehicles = sorted(vehicles_by_zone.get(zone_name, []), key=lambda v: str(v.id))
+        z_dedicated = sorted(vehicles_by_zone.get(zone_name, []), key=lambda v: str(v.id))
+
+        # Calculate zone demand vs dedicated fleet capacity
+        zone_m3 = sum(mo.m3 for mo in z_outlets)
+        zone_kg = sum(mo.kg for mo in z_outlets)
+        zone_stops = len(z_outlets)
+
+        ded_m3 = sum(v.max_m3 for v in z_dedicated)
+        ded_kg = sum(v.max_kg for v in z_dedicated)
+        ded_stops = len(z_dedicated) * max_stops
+
+        deficit_m3 = max(0.0, zone_m3 - ded_m3)
+        deficit_kg = max(0.0, zone_kg - ded_kg)
+        deficit_stops = max(0, zone_stops - ded_stops)
+
+        drafted_float_for_zone: list[VehicleIn] = []
+        # Draft float vehicles if zone has capacity deficit or no dedicated fleet
+        if (deficit_m3 > 0.01 or deficit_kg > 0.01 or deficit_stops > 0 or not z_dedicated) and available_float_vehicles:
+            needed_types = {mo.jns_kend.upper() for mo in z_outlets if mo.jns_kend}
+            while (deficit_m3 > 0.01 or deficit_kg > 0.01 or deficit_stops > 0 or (not z_dedicated and not drafted_float_for_zone)) and available_float_vehicles:
+                # Prioritize vehicle type compatibility
+                candidate_idx = 0
+                for idx, fv in enumerate(available_float_vehicles):
+                    fv_type = (fv.jns_kend or "").upper()
+                    if any(nt in fv_type for nt in needed_types if nt != "TRONTON"):
+                        candidate_idx = idx
+                        break
+                drafted_v = available_float_vehicles.pop(candidate_idx)
+                drafted_float_for_zone.append(drafted_v)
+                deficit_m3 -= drafted_v.max_m3
+                deficit_kg -= drafted_v.max_kg
+                deficit_stops -= max_stops
+
+            if drafted_float_for_zone:
+                log.info(
+                    "Zone %s overloaded (m3=%.2f/%.2f, kg=%.1f/%.1f, stops=%d/%d) -> drafted %d float vehicles: [%s]",
+                    zone_name, zone_m3, ded_m3, zone_kg, ded_kg, zone_stops, ded_stops,
+                    len(drafted_float_for_zone), ", ".join(f"{v.id} ({v.jns_kend})" for v in drafted_float_for_zone)
+                )
+
+        z_vehicles = sorted(z_dedicated + drafted_float_for_zone, key=lambda v: str(v.id))
 
         if not z_vehicles:
             log.warning(
-                "Zone %s: %d outlets have no assigned vehicles -> dropping to unassigned",
+                "Zone %s: %d outlets have no assigned vehicles and no float fleet available -> passing to Phase 2 Sweeper",
                 zone_name, len(z_outlets),
             )
             all_unassigned_outlets.extend(o.id for o in z_outlets)
             if progress_cb:
-                pct = 45 + int((zone_idx / total_zones) * 40)
-                progress_cb("ZONE", pct, f"Zone {zone_name} ({zone_idx}/{total_zones}): No vehicles -> {len(z_outlets)} unassigned")
+                pct = 45 + int((zone_idx / total_phases) * 40)
+                progress_cb("ZONE", pct, f"Zone {zone_name} ({zone_idx}/{total_phases}): No vehicles -> {len(z_outlets)} outlets queued for Sweeper")
             continue
 
         # Slicing duration and distance submatrices
@@ -1440,8 +1637,12 @@ def solve_cvrp_matrix(
         z_distances = [[raw_distances[r][c] for c in z_matrix_indices] for r in z_matrix_indices]
 
         if progress_cb:
-            pct = 45 + int(((zone_idx - 1) / total_zones) * 40)
-            progress_cb("ZONE", pct, f"Solving Zone {zone_name} ({zone_idx}/{total_zones}): {len(z_outlets)} outlets, {len(z_vehicles)} vehicles...")
+            pct = 45 + int(((zone_idx - 1) / total_phases) * 40)
+            progress_cb(
+                "ZONE",
+                pct,
+                f"Solving Zone {zone_name} ({zone_idx}/{total_phases}): {len(z_outlets)} outlets, {len(z_vehicles)} vehicles ({len(z_dedicated)} dedicated, {len(drafted_float_for_zone)} float)..."
+            )
 
         t_z0 = time.monotonic()
         z_assigned, z_unassigned = _solve_single_zone_matrix(
@@ -1455,9 +1656,15 @@ def solve_cvrp_matrix(
             time_limit_s=15,
             progress_cb=progress_cb,
             zone_idx=zone_idx,
-            total_zones=total_zones,
+            total_zones=total_phases,
         )
         t_z = time.monotonic() - t_z0
+
+        # Return any drafted float vehicles that weren't actually assigned a route back to pool
+        used_in_zone = {r.vehicle_id for r in z_assigned}
+        for fv in drafted_float_for_zone:
+            if fv.id not in used_in_zone:
+                available_float_vehicles.append(fv)
 
         # Calculate average EPE for this zone
         zv_map = {v.id: v for v in z_vehicles}
@@ -1469,13 +1676,74 @@ def solve_cvrp_matrix(
             zone_name, t_z, len(z_assigned), avg_z_epe, len(z_unassigned),
         )
         if progress_cb:
-            pct = 45 + int((zone_idx / total_zones) * 40)
+            pct = 45 + int((zone_idx / total_phases) * 40)
             progress_cb("ZONE", pct, f"Zone {zone_name} completed in {t_z:.1f}s: {len(z_assigned)} routes (avg {avg_z_epe:.1f}% EPE), {len(z_unassigned)} unassigned")
 
         all_assigned_routes.extend(z_assigned)
         all_unassigned_outlets.extend(z_unassigned)
 
-    # ── Phase 2 Post-Processing: Cross-District Border Sweeper ─────────────
+    # ── Tier 3 / Phase B: ZONE_UNKNOWN & Orphan Resolution ─────────────
+    unknown_outlets = outlets_by_zone.get("ZONE_UNKNOWN", [])
+    if unknown_outlets:
+        unknown_idx = len(named_zones) + 1
+        u_vehicles = sorted(available_float_vehicles, key=lambda v: str(v.id))
+        if u_vehicles:
+            log.info(
+                "ZONE_UNKNOWN: Solving %d orphan outlets with %d remaining float vehicles (%s)",
+                len(unknown_outlets), len(u_vehicles), ", ".join(v.id for v in u_vehicles)
+            )
+            if progress_cb:
+                pct = 45 + int(((unknown_idx - 1) / total_phases) * 40)
+                progress_cb("ZONE", pct, f"Solving ZONE_UNKNOWN ({unknown_idx}/{total_phases}): {len(unknown_outlets)} orphan outlets with {len(u_vehicles)} float vehicles...")
+
+            u_matrix_indices = [0]
+            for mo in unknown_outlets:
+                if mo.id in original_id_to_idx:
+                    u_matrix_indices.append(original_id_to_idx[mo.id])
+                elif mo.id in expansion_map:
+                    first_m = expansion_map[mo.id][0]
+                    u_matrix_indices.append(original_id_to_idx.get(first_m.id, 1))
+                else:
+                    u_matrix_indices.append(1)
+
+            u_durations = [[raw_durations[r][c] for c in u_matrix_indices] for r in u_matrix_indices]
+            u_distances = [[raw_distances[r][c] for c in u_matrix_indices] for r in u_matrix_indices]
+
+            t_u0 = time.monotonic()
+            u_assigned, u_unassigned = _solve_single_zone_matrix(
+                zone_name="ZONE_UNKNOWN",
+                zone_durations=u_durations,
+                zone_distances=u_distances,
+                zone_outlets=unknown_outlets,
+                zone_vehicles=u_vehicles,
+                max_stops=max_stops,
+                max_grouppayer=max_grouppayer,
+                time_limit_s=15,
+                progress_cb=progress_cb,
+                zone_idx=unknown_idx,
+                total_zones=total_phases,
+            )
+            t_u = time.monotonic() - t_u0
+            log.info(
+                "ZONE_UNKNOWN solved in %.2fs: %2d routes, %3d unassigned",
+                t_u, len(u_assigned), len(u_unassigned),
+            )
+            if progress_cb:
+                pct = 45 + int((unknown_idx / total_phases) * 40)
+                progress_cb("ZONE", pct, f"ZONE_UNKNOWN completed in {t_u:.1f}s: {len(u_assigned)} routes, {len(u_unassigned)} unassigned")
+            all_assigned_routes.extend(u_assigned)
+            all_unassigned_outlets.extend(u_unassigned)
+        else:
+            log.warning(
+                "ZONE_UNKNOWN: %d orphan outlets have no remaining float vehicles -> passing directly to Phase 2 Sweeper",
+                len(unknown_outlets),
+            )
+            all_unassigned_outlets.extend(o.id for o in unknown_outlets)
+            if progress_cb:
+                pct = 45 + int((unknown_idx / total_phases) * 40)
+                progress_cb("ZONE", pct, f"ZONE_UNKNOWN: No float vehicles available -> {len(unknown_outlets)} outlets queued for Sweeper")
+
+    # ── Tier 3 / Phase C: Phase 2 Post-Processing Cross-District Sweeper ─
     if progress_cb:
         progress_cb("SWEEPER", 86, f"Running Cross-District Sweeper on {len(all_unassigned_outlets)} unassigned outlets...")
     all_assigned_routes, all_unassigned_outlets = _cross_district_sweeper(
@@ -1486,7 +1754,8 @@ def solve_cvrp_matrix(
         raw_durations=raw_durations,
         original_id_to_idx=original_id_to_idx,
         expansion_map=expansion_map,
-        max_detour_s=1200
+        max_detour_s=1200,
+        max_stops=max_stops,
     )
 
     # ── Step 4: Expand grouppayer super-nodes back to individual outlet IDs ─
@@ -1962,16 +2231,6 @@ async def optimize(payload: OptimizeRequest):
 # ---------------------------------------------------------------------------
 # Lightweight Single-Vehicle TSP Re-Sequencing (< 1 second)
 # ---------------------------------------------------------------------------
-def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Fast spherical distance in meters between two lat/lng coordinates."""
-    R = 6371000.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
-    return 2.0 * R * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
-
-
 def solve_single_vehicle_tsp(duration_matrix: list[list[float]]) -> list[int]:
     """
     Fast, deterministic TSP heuristic with Depot (node 0) as start & return end.
