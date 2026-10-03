@@ -843,22 +843,29 @@ def split_oversized_demands(
             total_m3 = round(sum(m.m3 for m in members), 4)
             total_kg = round(sum(m.kg for m in members), 4)
             return [(total_m3, total_kg, "ORIGINAL", members)]
-            
+
         parts_data = []
         current_members = []
         current_m3 = 0.0
         current_kg = 0.0
         part_idx = 1
-        
+
         for m in members:
+            # Check if this member is ALREADY a split outlet (prevent recursive split cascading)
+            is_already_split = bool(re.search(r"_SPLIT_\d+", str(m.id)) or re.search(r"\(Split\s*\d+\)", str(m.custname or "")))
+            if is_already_split:
+                parts_data.append((round(m.m3, 4), round(m.kg, 4), "ORIGINAL", [m]))
+                continue
+
             rem_m3 = m.m3
             rem_kg = m.kg
-            clean_custname = m.custname or m.id
-            
+            clean_custname = re.sub(r"\s*\(Split\s*\d+\)", "", m.custname or m.id).strip()
+            clean_id = re.sub(r"_SPLIT_\d+", "", str(m.id))
+
             while rem_m3 > 0.0001 or rem_kg > 0.0001:
                 space_m3 = max_m3 - current_m3
                 space_kg = max_kg - current_kg
-                
+
                 if space_m3 <= 0.0001 or space_kg <= 0.0001:
                     parts_data.append((round(current_m3, 4), round(current_kg, 4), f"Split {part_idx}", current_members))
                     current_members = []
@@ -867,35 +874,36 @@ def split_oversized_demands(
                     part_idx += 1
                     space_m3 = max_m3
                     space_kg = max_kg
-                
+
                 take_m3 = min(rem_m3, space_m3)
                 take_kg = min(rem_kg, space_kg)
 
-                # Invoices tagged with (Split X)
+                # Invoices tagged with (Split X) without nesting
                 split_invoices = []
                 if m.invoices:
                     for inv in m.invoices:
+                        clean_invno = re.sub(r"\s*\(Split\s*\d+\)", "", str(inv.invno)).strip()
                         split_invoices.append(InvoiceIn(
-                            invno=f"{inv.invno} (Split {part_idx})",
+                            invno=f"{clean_invno} (Split {part_idx})",
                             m3=round(take_m3, 4),
                             kg=round(take_kg, 4)
                         ))
                 else:
                     split_invoices.append(InvoiceIn(
-                        invno=f"{m.id} (Split {part_idx})",
+                        invno=f"{clean_id} (Split {part_idx})",
                         m3=round(take_m3, 4),
                         kg=round(take_kg, 4)
                     ))
-                
-                split_m = m.copy(update={
-                    "id": f"{m.id}_SPLIT_{part_idx}",
+
+                split_m = m.model_copy(update={
+                    "id": f"{clean_id}_SPLIT_{part_idx}",
                     "custname": f"{clean_custname} (Split {part_idx})",
                     "m3": round(take_m3, 4),
                     "kg": round(take_kg, 4),
                     "invoices": split_invoices
                 })
                 current_members.append(split_m)
-                
+
                 current_m3 += take_m3
                 current_kg += take_kg
                 rem_m3 -= take_m3
@@ -905,10 +913,10 @@ def split_oversized_demands(
             tag = f"Split {part_idx}" if part_idx > 1 else "ORIGINAL"
             parts_data.append((round(current_m3, 4), round(current_kg, 4), tag, current_members))
 
-        if part_idx == 1:
+        if part_idx == 1 and not any(p[2] != "ORIGINAL" for p in parts_data):
             # If demand fit into 1 truck (no split required), restore original clean records
             parts_data = [(parts_data[0][0], parts_data[0][1], "ORIGINAL", members)]
-            
+
         return parts_data
 
     # 1. Process GroupPayer consolidated groups (deterministically sorted by group ID)
@@ -950,7 +958,8 @@ def split_oversized_demands(
                 gp_id, total_m3, total_kg, len(parts), max_fleet_m3, max_fleet_kg,
             )
             for m3_p, kg_p, tag, assigned_members in parts:
-                node_id = f"GP_{gp_id}_{tag.replace(' ', '_').upper()}"
+                clean_tag = tag.replace(" ", "_").upper()
+                node_id = f"GP_{gp_id}_{clean_tag}"
                 all_invoices = []
                 all_allowed = set()
                 for m in assigned_members:
@@ -976,6 +985,11 @@ def split_oversized_demands(
 
     # 2. Process Standalone individual outlets (deterministically sorted by outlet ID)
     for o in sorted(standalone, key=lambda x: str(x.id)):
+        # If this standalone outlet is ALREADY a split outlet, preserve as-is
+        if re.search(r"_SPLIT_\d+", str(o.id)) or re.search(r"\(Split\s*\d+\)", str(o.custname or "")):
+            processed_outlets.append(o)
+            continue
+
         parts = _distribute_members([o], max_fleet_m3, max_fleet_kg)
         if len(parts) == 1 and parts[0][2] == "ORIGINAL":
             processed_outlets.append(o)
@@ -985,7 +999,10 @@ def split_oversized_demands(
                 o.id, o.custname, o.m3, o.kg, len(parts), max_fleet_m3, max_fleet_kg,
             )
             for m3_p, kg_p, tag, assigned_members in parts:
-                node_id = f"{o.id}_{tag.replace(' ', '_').upper()}"
+                clean_oid = re.sub(r"_SPLIT_\d+", "", str(o.id))
+                clean_oname = re.sub(r"\s*\(Split\s*\d+\)", "", o.custname or o.id).strip()
+                clean_tag = tag.replace(" ", "_").upper()
+                node_id = f"{clean_oid}_{clean_tag}" if tag != "ORIGINAL" else str(o.id)
                 for m in assigned_members:
                     split_outlets_list.append(m)
                 split_node = OutletIn(
@@ -994,7 +1011,7 @@ def split_oversized_demands(
                     lng=o.lng,
                     m3=m3_p,
                     kg=kg_p,
-                    custname=f"{o.custname or o.id} ({tag})",
+                    custname=f"{clean_oname} ({tag})" if tag != "ORIGINAL" else o.custname,
                     jns_kend=o.jns_kend,
                     invoices=assigned_members[0].invoices if assigned_members else o.invoices,
                     allowed_vehicles=o.allowed_vehicles,
@@ -1816,8 +1833,11 @@ def solve_cvrp_matrix(
     # ── Step 1: Preprocessing & GroupPayer / SDVRP consolidation ───────
     if progress_cb:
         progress_cb("MATRIX", 42, f"GroupPayer: Preprocessing {len(outlets)} outlets...")
-    max_fleet_m3 = max((v.max_m3 for v in vehicles), default=float("inf"))
-    max_fleet_kg = max((v.max_kg for v in vehicles), default=float("inf"))
+    fleet_max_m3 = max((v.max_m3 for v in vehicles), default=18.0)
+    fleet_max_kg = max((v.max_kg for v in vehicles), default=6500.0)
+    # Master fleet capacity floor: Never shred orders below standard heavy truck capacity (14 m3 / 6000 kg)
+    max_fleet_m3 = max(fleet_max_m3, 14.0)
+    max_fleet_kg = max(fleet_max_kg, 6000.0)
     merged_outlets, expansion_map, split_outlets = _preprocess_grouppayer(outlets, max_fleet_m3, max_fleet_kg)
     if progress_cb:
         progress_cb("MATRIX", 45, f"GroupPayer: Consolidated into {len(merged_outlets)} atomic units ({len(expansion_map)} multi-outlet groups)")

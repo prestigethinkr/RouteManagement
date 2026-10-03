@@ -646,16 +646,33 @@ export default function FleetDispatchPage() {
     return String(vehicleId).replace(/\s*\(?(?:Trip|Ritase)\s*\d+\)?/gi, "").trim();
   }
 
+  function cleanOutletCustName(name: string): string {
+    if (!name) return "";
+    const baseName = name.replace(/\s*\(Split\s*\d+\)/gi, "").trim();
+    const splitMatches = name.match(/\(Split\s*\d+\)/gi);
+    if (splitMatches && splitMatches.length > 0) {
+      const lastSplit = splitMatches[splitMatches.length - 1].trim();
+      return `${baseName} ${lastSplit}`;
+    }
+    return baseName;
+  }
+
   function resolveOutlet(id: string, outletMap: Map<string, PendingOutlet>): PendingOutlet | undefined {
-    if (outletMap.has(id)) return outletMap.get(id);
+    if (outletMap.has(id)) {
+      const o = outletMap.get(id)!;
+      return {
+        ...o,
+        custname: cleanOutletCustName(o.custname),
+      };
+    }
 
     const splitMatch = id.match(/^(.*)_SPLIT_(\d+)$/);
     if (splitMatch) {
-      const baseId = splitMatch[1];
+      const baseId = splitMatch[1].replace(/(_SPLIT_\d+)+$/, "");
       const splitIndex = splitMatch[2];
-      const baseOutlet = outletMap.get(baseId);
+      const baseOutlet = outletMap.get(baseId) || outletMap.get(splitMatch[1]);
       if (baseOutlet) {
-        const cleanCustName = baseOutlet.custname.replace(/\s*\(Split\s*\d+\)/gi, "").trim();
+        const cleanCustName = cleanOutletCustName(baseOutlet.custname).replace(/\s*\(Split\s*\d+\)/gi, "").trim();
         return {
           ...baseOutlet,
           custno: id,
@@ -751,12 +768,13 @@ export default function FleetDispatchPage() {
       );
       if (optimizedData.split_outlets) {
         for (const so of optimizedData.split_outlets) {
-          const baseId = so.id.replace(/_SPLIT_\d+$/, "");
+          const baseId = so.id.replace(/(_SPLIT_\d+)+$/, "");
           const base = outletMap.get(baseId);
+          const cleanName = cleanOutletCustName(so.custname || base?.custname || so.id);
           outletMap.set(so.id, {
             ...(base || {}),
             custno: so.id,
-            custname: so.custname,
+            custname: cleanName,
             total_kubikasi_m3: so.m3,
             total_berat_kg: so.kg,
             lat: so.lat,
@@ -767,7 +785,7 @@ export default function FleetDispatchPage() {
             grouppayer: so.grouppayer,
             invoices: (so.invoices || []).map((inv: any) => ({
               CUSTNO: so.id,
-              CUSTNAME: so.custname,
+              CUSTNAME: cleanName,
               INVNO: inv.invno,
               LATITUDE: so.lat,
               LONGITUDE: so.lng,
@@ -1115,17 +1133,19 @@ export default function FleetDispatchPage() {
       setSolverStage("MAP");
       setSolverProgress(97);
 
-      const outletMap = new Map<string, PendingOutlet>(
-        unassignedOutlets.map((o) => [o.custno, o])
-      );
+      const outletMap = new Map<string, PendingOutlet>();
+      for (const o of pendingOutlets) outletMap.set(o.custno, o);
+      for (const o of unassignedOutlets) outletMap.set(o.custno, o);
+
       if (optimizedData.split_outlets) {
         for (const so of optimizedData.split_outlets) {
-          const baseId = so.id.replace(/_SPLIT_\d+$/, "");
+          const baseId = so.id.replace(/(_SPLIT_\d+)+$/, "");
           const base = outletMap.get(baseId);
+          const cleanName = cleanOutletCustName(so.custname || base?.custname || so.id);
           outletMap.set(so.id, {
             ...(base || {}),
             custno: so.id,
-            custname: so.custname,
+            custname: cleanName,
             total_kubikasi_m3: so.m3,
             total_berat_kg: so.kg,
             lat: so.lat,
@@ -1136,7 +1156,7 @@ export default function FleetDispatchPage() {
             grouppayer: so.grouppayer,
             invoices: (so.invoices || []).map((inv: any) => ({
               CUSTNO: so.id,
-              CUSTNAME: so.custname,
+              CUSTNAME: cleanName,
               INVNO: inv.invno,
               LATITUDE: so.lat,
               LONGITUDE: so.lng,
@@ -1213,11 +1233,14 @@ export default function FleetDispatchPage() {
       );
 
       const newlyAssignedIds = new Set(optimizedData.assigned_routes.flatMap((r: any) => r.route));
-      const remainingUnassigned = optimizedData.unassigned_outlets
+      let remainingUnassigned: PendingOutlet[] = optimizedData.unassigned_outlets
         ? optimizedData.unassigned_outlets
             .map((id: string) => resolveOutlet(id, outletMap))
             .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined)
         : unassignedOutlets.filter((o) => !newlyAssignedIds.has(o.custno));
+
+      // Safeguard: Ensure newly assigned outlets are never included in remaining unassigned
+      remainingUnassigned = remainingUnassigned.filter((o: PendingOutlet) => !newlyAssignedIds.has(o.custno));
 
       const updater = (prev: { routes: AssignedRoute[]; unassigned: PendingOutlet[] } | null) => {
         const baseRoutes = prev?.routes ?? assignedRoutes;
