@@ -18,7 +18,7 @@ export default function Navbar() {
         <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600">
           <Truck className="h-4 w-4 text-white" />
         </div>
-        <span className="hidden text-sm font-bold text-white sm:inline">RouteManager</span>
+        <span className="hidden text-sm font-bold text-white sm:inline">TMS Concept</span>
       </Link>
 
       {/* Links */}
@@ -30,11 +30,10 @@ export default function Navbar() {
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                isActive
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${isActive
                   ? "bg-blue-600 text-white"
                   : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"
-              }`}
+                }`}
             >
               <Icon className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">{label}</span>

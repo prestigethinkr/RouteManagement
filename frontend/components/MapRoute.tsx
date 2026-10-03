@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo, memo } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -63,22 +63,147 @@ const GRAY_ICON = L.divIcon({
 });
 
 // ---------------------------------------------------------------------------
-// Auto-fit bounds
+// Distinct Ghost Marker icon for unassigned outlet preview / hover
 // ---------------------------------------------------------------------------
-function FitBounds({ positions }: { positions: [number, number][] }) {
+const GHOST_ICON = L.divIcon({
+  className: "ghost-pulse-icon",
+  html: `<div style="
+    position:relative;
+    width:36px;height:36px;
+    display:flex;align-items:center;justify-content:center;
+  ">
+    <div style="
+      position:absolute;inset:0;border-radius:50%;
+      background:rgba(100,116,139,0.35);
+      border:2px dashed #475569;
+    "></div>
+    <div style="
+      width:26px;height:26px;border-radius:50%;
+      background:#475569;color:#ffffff;
+      display:flex;align-items:center;justify-content:center;
+      font-size:11px;font-weight:800;
+      border:2px solid #ffffff;
+      box-shadow:0 3px 12px rgba(15,23,42,0.6);
+    ">?</div>
+  </div>`,
+  iconSize: [36, 36],
+  iconAnchor: [18, 18],
+  popupAnchor: [0, -20],
+});
+
+// ---------------------------------------------------------------------------
+// Haversine distance helper for proximity calculation (km)
+// ---------------------------------------------------------------------------
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Map Viewport Controller:
+// Performs a single one-time initial frame when data first arrives so user sees the area.
+// Handles:
+// 1. One-time initial frame when dataset first arrives.
+// 2. Focused vehicle framing when Route Editor Drawer is open (or vehicle is re-routed),
+//    with bottom drawer offset padding ([40, 420]) so the route stays in the top viewport.
+// ---------------------------------------------------------------------------
+interface MapViewportControllerProps {
+  routes: AssignedRoute[];
+  pendingOutlets?: PendingOutlet[];
+  isPreviewMode: boolean;
+  depotPos: [number, number];
+  isEditorOpen?: boolean;
+  focusedVehicleId?: string | null;
+}
+
+function MapViewportController({
+  routes,
+  pendingOutlets,
+  isPreviewMode,
+  depotPos,
+  isEditorOpen,
+  focusedVehicleId,
+}: MapViewportControllerProps) {
   const map = useMap();
+  const initialFitDoneRef = useRef<boolean>(false);
+  const lastFocusedRouteKeyRef = useRef<string | null>(null);
+
+  // 1. One-time initial load framing
   useEffect(() => {
-    if (positions.length >= 2) {
-      map.fitBounds(L.latLngBounds(positions), { padding: [50, 50] });
-    } else if (positions.length === 1) {
-      map.setView(positions[0], 13);
+    if (initialFitDoneRef.current) return;
+
+    if (routes.length > 0) {
+      initialFitDoneRef.current = true;
+      const allCoords: [number, number][] = [depotPos];
+      routes.forEach((r) => r.outlets.forEach((o) => allCoords.push([o.lat, o.lng])));
+      if (allCoords.length >= 2) {
+        map.fitBounds(L.latLngBounds(allCoords), { padding: [50, 50] });
+      }
+    } else if (isPreviewMode && pendingOutlets && pendingOutlets.length > 0) {
+      initialFitDoneRef.current = true;
+      const coords: [number, number][] = [
+        depotPos,
+        ...pendingOutlets.map((o) => [o.lat, o.lng] as [number, number]),
+      ];
+      map.fitBounds(L.latLngBounds(coords), { padding: [50, 50] });
     }
-  }, [map, positions]);
+  }, [map, routes, pendingOutlets, isPreviewMode, depotPos]);
+
+  // 2. In-place Route Editor single-vehicle framing with bottom padding
+  useEffect(() => {
+    if (!isEditorOpen || !focusedVehicleId) {
+      lastFocusedRouteKeyRef.current = null;
+      return;
+    }
+
+    const activeRoute = routes.find((r) => r.vehicle.NO_KEND === focusedVehicleId);
+    if (!activeRoute) return;
+
+    // Unique key to detect vehicle switch or route re-sequencing / geometry update
+    const activeRouteKey = `${activeRoute.vehicle.NO_KEND}-${activeRoute.outlets.length}-${activeRoute.distanceKm ?? 0}-${activeRoute.routeGeometry?.coordinates?.length ?? 0}`;
+
+    if (lastFocusedRouteKeyRef.current === activeRouteKey) return;
+    lastFocusedRouteKeyRef.current = activeRouteKey;
+
+    const coords: [number, number][] = [depotPos];
+
+    if (activeRoute.routeGeometry?.coordinates && activeRoute.routeGeometry.coordinates.length > 0) {
+      activeRoute.routeGeometry.coordinates.forEach((c) => {
+        coords.push([c[1], c[0]]);
+      });
+    } else {
+      activeRoute.outlets.forEach((o) => {
+        coords.push([o.lat, o.lng]);
+      });
+    }
+
+    if (coords.length >= 2) {
+      // Fit bounds with bottom padding [40, 420] so route remains visible in the top viewport
+      map.fitBounds(L.latLngBounds(coords), {
+        paddingTopLeft: [40, 40],
+        paddingBottomRight: [40, 420],
+        maxZoom: 15,
+        animate: true,
+        duration: 0.8,
+      });
+    }
+  }, [map, routes, isEditorOpen, focusedVehicleId, depotPos]);
+
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// Popup controller — flies to outlet and opens its popup after movement
+// Popup controller — opens marker popup without jumping or recentering map
 // ---------------------------------------------------------------------------
 function MapPopupController({
   focusedOutlet,
@@ -87,16 +212,13 @@ function MapPopupController({
   focusedOutlet: { custno: string; lat: number; lng: number } | null | undefined;
   markerRefs: React.MutableRefObject<Record<string, L.Marker>>;
 }) {
-  const map = useMap();
   useEffect(() => {
     if (!focusedOutlet) return;
-    map.flyTo([focusedOutlet.lat, focusedOutlet.lng], 16, { duration: 1.5 });
-    const timer = setTimeout(() => {
-      const marker = markerRefs.current[focusedOutlet.custno];
-      if (marker) marker.openPopup();
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [focusedOutlet, map, markerRefs]);
+    const marker = markerRefs.current[focusedOutlet.custno];
+    if (marker) {
+      marker.openPopup();
+    }
+  }, [focusedOutlet, markerRefs]);
   return null;
 }
 
@@ -111,15 +233,82 @@ interface MapRouteProps {
   pendingOutlets?: PendingOutlet[];
   /** Outlet to fly to and open popup when a dispatcher clicks it in the panel. */
   focusedOutlet?: { custno: string; lat: number; lng: number } | null;
+  /** Ghost Marker: Hovered/clicked unassigned outlet in Route Editor Drawer */
+  focusedUnassignedOutlet?: PendingOutlet | null;
+  /** Currently selected vehicle route in Route Editor Drawer (for proximity line) */
+  selectedVehicleRoute?: AssignedRoute | null;
+  /** Whether the Route Editor Drawer is currently open */
+  isEditorOpen?: boolean;
+  /** Vehicle ID currently being edited in Route Editor Drawer */
+  focusedVehicleId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
-export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focusedOutlet }: MapRouteProps) {
+function MapRouteComponent({
+  routes,
+  visibleVehicles,
+  pendingOutlets,
+  focusedOutlet,
+  focusedUnassignedOutlet,
+  selectedVehicleRoute,
+  isEditorOpen,
+  focusedVehicleId,
+}: MapRouteProps) {
   const markerRefs = useRef<Record<string, L.Marker>>({});
   const depotPos: [number, number] = [DEPOT_COORDS.lat, DEPOT_COORDS.lng];
   const isPreviewMode = routes.length === 0 && (pendingOutlets?.length ?? 0) > 0;
+
+  // Proximity Calculation: Find nearest stop of selectedVehicleRoute to focusedUnassignedOutlet
+  const nearestStopInfo = useMemo(() => {
+    if (!focusedUnassignedOutlet || !selectedVehicleRoute) return null;
+    if (selectedVehicleRoute.outlets.length === 0) {
+      const dist = haversineKm(
+        focusedUnassignedOutlet.lat,
+        focusedUnassignedOutlet.lng,
+        DEPOT_COORDS.lat,
+        DEPOT_COORDS.lng
+      );
+      return {
+        lat: DEPOT_COORDS.lat,
+        lng: DEPOT_COORDS.lng,
+        outletName: "Depot / Warehouse",
+        vehicleNoKend: selectedVehicleRoute.vehicle.NO_KEND,
+        distanceKm: dist,
+      };
+    }
+
+    let bestOutlet = selectedVehicleRoute.outlets[0];
+    let minDistance = haversineKm(
+      focusedUnassignedOutlet.lat,
+      focusedUnassignedOutlet.lng,
+      bestOutlet.lat,
+      bestOutlet.lng
+    );
+
+    for (let i = 1; i < selectedVehicleRoute.outlets.length; i++) {
+      const o = selectedVehicleRoute.outlets[i];
+      const dist = haversineKm(
+        focusedUnassignedOutlet.lat,
+        focusedUnassignedOutlet.lng,
+        o.lat,
+        o.lng
+      );
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestOutlet = o;
+      }
+    }
+
+    return {
+      lat: bestOutlet.lat,
+      lng: bestOutlet.lng,
+      outletName: bestOutlet.custname,
+      vehicleNoKend: selectedVehicleRoute.vehicle.NO_KEND,
+      distanceKm: minDistance,
+    };
+  }, [focusedUnassignedOutlet, selectedVehicleRoute]);
 
   // Collect all positions for bounds fitting
   const allPositions: [number, number][] = [depotPos];
@@ -154,8 +343,18 @@ export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focu
       />
 
       <ZoomControl position="bottomright" />
-      <MapPopupController focusedOutlet={focusedOutlet} markerRefs={markerRefs} />
-      <FitBounds positions={allPositions} />
+      <MapPopupController
+        focusedOutlet={focusedOutlet}
+        markerRefs={markerRefs}
+      />
+      <MapViewportController
+        routes={routes}
+        pendingOutlets={pendingOutlets}
+        isPreviewMode={isPreviewMode}
+        depotPos={depotPos}
+        isEditorOpen={isEditorOpen}
+        focusedVehicleId={focusedVehicleId}
+      />
 
       {/* Preview mode: gray markers for all pending outlets */}
       {isPreviewMode && pendingOutlets?.map((outlet, idx) => (
@@ -166,7 +365,12 @@ export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focu
         >
           <Popup>
             <div style={{ minWidth: 160 }}>
-              <p style={{ fontWeight: 600, margin: 0 }}>{outlet.custname}</p>
+              <p style={{ fontWeight: 600, margin: 0 }}>
+                {outlet.custname}
+                {outlet.is_cross_zone_swept && (
+                  <span style={{ fontSize: 9, marginLeft: 6, background: "#dbeafe", color: "#1d4ed8", padding: "2px 4px", borderRadius: 4, textTransform: "uppercase", fontWeight: "bold" }}>Cross-Zone Swept</span>
+                )}
+              </p>
               <p style={{ fontSize: 11, color: "#555", margin: 0 }}>
                 {outlet.custno} · {outlet.invoices.length} invoice(s)
               </p>
@@ -194,6 +398,11 @@ export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focu
         // Respect visibility toggle — omit from DOM entirely when hidden
         if (visibleVehicles && !visibleVehicles.includes(route.vehicle.NO_KEND)) return null;
 
+        // When a vehicle is focused (e.g. editing in bottom drawer), completely HIDE other vehicles
+        if (focusedVehicleId && route.vehicle.NO_KEND !== focusedVehicleId) {
+          return null;
+        }
+
         // GeoJSON [lng, lat] → Leaflet [lat, lng]; fall back to straight lines
         const polylinePoints: [number, number][] = route.routeGeometry
           ? route.routeGeometry.coordinates.map((c) => [c[1], c[0]] as [number, number])
@@ -201,19 +410,18 @@ export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focu
 
         return (
           <span key={`route-${rIdx}`}>
-            {/* Polyline */}
             {polylinePoints.length >= 2 && (
               <Polyline
                 positions={polylinePoints}
                 pathOptions={{
                   color: route.color,
                   weight: 4,
-                  opacity: 0.8,
+                  opacity: 0.9,
                 }}
               />
             )}
 
-            {/* Stop markers */}
+            {/* Stop markers for the active vehicle only */}
             {route.outlets.map((outlet, sIdx) => (
               <Marker
                 key={`stop-${rIdx}-${sIdx}`}
@@ -226,7 +434,12 @@ export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focu
                     <p style={{ fontWeight: 700, margin: 0, color: route.color }}>
                       {route.vehicle.NO_KEND} — Stop {sIdx + 1}
                     </p>
-                    <p style={{ fontWeight: 600, margin: "2px 0" }}>{outlet.custname}</p>
+                    <p style={{ fontWeight: 600, margin: "2px 0" }}>
+                      {outlet.custname}
+                      {outlet.is_cross_zone_swept && (
+                        <span style={{ fontSize: 9, marginLeft: 6, background: "#dbeafe", color: "#1d4ed8", padding: "2px 4px", borderRadius: 4, textTransform: "uppercase", fontWeight: "bold", display: "inline-block" }}>Cross-Zone Swept</span>
+                      )}
+                    </p>
                     <p style={{ fontSize: 11, color: "#555", margin: 0 }}>
                       {outlet.custno} · {outlet.invoices.length} invoice(s)
                     </p>
@@ -240,6 +453,85 @@ export default function MapRoute({ routes, visibleVehicles, pendingOutlets, focu
           </span>
         );
       })}
+
+      {/* ── Ghost Marker & Proximity Visual for Route Editor Drawer ── */}
+      {focusedUnassignedOutlet && (
+        <>
+          <Marker
+            position={[focusedUnassignedOutlet.lat, focusedUnassignedOutlet.lng]}
+            icon={GHOST_ICON}
+            zIndexOffset={3500}
+          >
+            <Popup autoPan={false}>
+              <div style={{ minWidth: 200, fontFamily: "sans-serif" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <span
+                    style={{
+                      background: "#334155",
+                      color: "#f8fafc",
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                      fontSize: 10,
+                      fontWeight: 700,
+                    }}
+                  >
+                    GHOST UNASSIGNED
+                  </span>
+                  <span style={{ fontSize: 10, color: "#64748b", fontFamily: "monospace" }}>
+                    {focusedUnassignedOutlet.custno}
+                  </span>
+                </div>
+                <p style={{ fontWeight: 700, margin: "2px 0", fontSize: 12, color: "#0f172a" }}>
+                  {focusedUnassignedOutlet.custname}
+                </p>
+                <p style={{ fontSize: 11, color: "#475569", margin: "2px 0" }}>
+                  📦 {focusedUnassignedOutlet.total_kubikasi_m3.toFixed(3)} m³ · ⚖️ {focusedUnassignedOutlet.total_berat_kg.toFixed(1)} kg
+                </p>
+                {focusedUnassignedOutlet.zone && (
+                  <p style={{ fontSize: 10, color: "#64748b", margin: "2px 0" }}>
+                    📍 Zone: {focusedUnassignedOutlet.zone}
+                  </p>
+                )}
+                {nearestStopInfo && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      padding: "5px 7px",
+                      background: "#f1f5f9",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      color: "#334155",
+                    }}
+                  >
+                    🔗 Nearest stop ({nearestStopInfo.vehicleNoKend}):<br />
+                    <strong>{nearestStopInfo.outletName}</strong> (~{nearestStopInfo.distanceKm.toFixed(1)} km away)
+                  </div>
+                )}
+              </div>
+            </Popup>
+          </Marker>
+
+          {/* Proximity Visual: Dashed SVG Polyline to nearest route node */}
+          {nearestStopInfo && (
+            <Polyline
+              positions={[
+                [focusedUnassignedOutlet.lat, focusedUnassignedOutlet.lng],
+                [nearestStopInfo.lat, nearestStopInfo.lng],
+              ]}
+              pathOptions={{
+                color: selectedVehicleRoute?.color || "#475569",
+                dashArray: "6, 8",
+                weight: 3,
+                opacity: 0.85,
+              }}
+            />
+          )}
+        </>
+      )}
     </MapContainer>
   );
 }
+
+const MapRoute = memo(MapRouteComponent);
+export default MapRoute;

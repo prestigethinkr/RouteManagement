@@ -14,6 +14,12 @@ export interface RawInvoice {
   TOTAL_BERAT_KG: number;
   TOTAL_KARTON: number;
   JNS_KEND?: string; // optional: max allowed vehicle type for this outlet
+  GROUPPAYER?: string;
+  ZONE?: string;
+  ALLOWED_VEHICLES?: string;
+  KECAMATAN?: string;
+  KELURAHAN?: string;
+  ALAMAT?: string;
 }
 
 /** Aggregated outlet — grouped by CUSTNO from raw invoices */
@@ -25,7 +31,16 @@ export interface PendingOutlet {
   invoices: RawInvoice[];
   total_kubikasi_m3: number;
   total_berat_kg: number;
+  total_karton?: number;
+  total_neto?: number;
   jns_kend: string; // max allowed vehicle type; defaults to "TRONTON" if not in source data
+  grouppayer?: string;
+  zone?: string;
+  allowed_vehicles?: string[];
+  kecamatan?: string;
+  kelurahan?: string;
+  alamat?: string;
+  is_cross_zone_swept?: boolean;
 }
 
 /** A single vehicle from the fleet upload */
@@ -34,6 +49,8 @@ export interface Vehicle {
   NO_KEND: string;
   KUBIKASE: number; // capacity in M3
   TONASE: number;   // capacity in Kg
+  ZONES?: string[];
+  MAX_GROUPPAYER?: number;
 }
 
 /** GeoJSON LineString geometry returned by OSRM Trip API */
@@ -55,7 +72,7 @@ export interface AssignedRoute {
 }
 
 /** Depot coordinates — hardcoded area */
-export const DEPOT_COORDS = { lat: -6.163011, lng: 106.691112 };
+export const DEPOT_COORDS = { lat: -6.163799, lng: 106.690751 };
 /** Distinct route colors for multi-vehicle map rendering */
 export const ROUTE_COLORS = [
   "#2563eb", // blue

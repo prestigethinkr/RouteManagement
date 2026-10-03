@@ -1,0 +1,20 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Proxy for CVRP Python service on VPS (bypass Mixed Content HTTPS -> HTTP)
+[[redirects]]
+  from = "/api/cvrp/*"
+  to = "http://163.52.135.197:8000/:splat"
+  status = 200
+  force = true
+
+# Proxy for OSRM Mayora (bypass Mixed Content HTTPS -> HTTP)
+[[redirects]]
+  from = "/api/osrm/*"
+  to = "http://ficom.mayora.co.id:8081/osrm-api/:splat"
+  status = 200
+  force = true

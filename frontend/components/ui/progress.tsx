@@ -30,13 +30,13 @@ const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
       <div ref={ref} className={cn("w-full", className)} {...props}>
         {label && (
           <div className="mb-1 flex items-center justify-between text-[10px]">
-            <span className="text-gray-400">{label}</span>
-            <span className={cn("font-semibold", labelColor)}>
+            <span className="text-slate-500 font-medium">{label}</span>
+            <span className={cn("font-bold font-mono", labelColor)}>
               {pct.toFixed(0)}%
             </span>
           </div>
         )}
-        <div className="h-2 w-full overflow-hidden rounded-full bg-gray-800">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 border border-slate-200/60 shadow-inner">
           <div
             className={cn("h-full rounded-full transition-all duration-300", barColor)}
             style={{ width: `${barWidth}%` }}

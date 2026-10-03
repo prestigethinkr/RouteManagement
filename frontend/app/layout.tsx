@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
-import Navbar from "@/components/Navbar";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -32,11 +31,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} flex h-screen flex-col overflow-hidden bg-gray-950`}>
-        <Navbar />
-        <div className="flex flex-1 flex-col overflow-hidden">
+      <body className={`${inter.className} flex h-screen flex-col overflow-hidden bg-slate-100`}>
+        <main className="flex flex-1 flex-col overflow-hidden">
           {children}
-        </div>
+        </main>
         <Toaster />
       </body>
     </html>

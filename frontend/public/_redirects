@@ -1,0 +1,2 @@
+/api/cvrp/*  http://163.52.135.197:8000/:splat  200!
+/api/osrm/*  http://ficom.mayora.co.id:8081/osrm-api/:splat  200!

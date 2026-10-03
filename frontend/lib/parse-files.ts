@@ -36,6 +36,40 @@ export function parseInvoiceFile(buffer: ArrayBuffer, filename: string): Pending
       console.warn(`[parse-files] Skipping ${custno}/${invno}: invalid coords lat=${norm["LATITUDE"]} lng=${norm["LONGITUDE"]}`);
       continue;
     }
+    const jnsKend = norm["JNS_KEND"] ? String(norm["JNS_KEND"]).trim() : undefined;
+    const grouppayer = norm["GROUPPAYER"] ? String(norm["GROUPPAYER"]).trim() : undefined;
+    const zone = norm["ZONE"] ? String(norm["ZONE"]).trim() : (norm["GROUPKECAMATAN"] ? String(norm["GROUPKECAMATAN"]).trim() : undefined);
+    const kecamatan = norm["KECAMATAN"] ? String(norm["KECAMATAN"]).trim() : undefined;
+    const kelurahan = norm["KELURAHAN"] ? String(norm["KELURAHAN"]).trim() : undefined;
+    const alamat = norm["ALAMAT"] ? String(norm["ALAMAT"]).trim() : (norm["ADDRESS"] ? String(norm["ADDRESS"]).trim() : undefined);
+    const allowedVehiclesRaw = norm["ALLOWED_VEHICLES"] ?? norm["RESTRICTED_VEHICLES"] ?? norm["ALLOWED_VEHICLE"];
+    let allowed_vehicles = allowedVehiclesRaw ? String(allowedVehiclesRaw).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+    
+    // In Matrix ERP, if jns_kend is set to specific vehicle (e.g. ENGKEL, MOTOR, CDD), map to allowed compatible vehicle types
+    if (!allowed_vehicles && jnsKend && jnsKend.toUpperCase() !== "TRONTON" && jnsKend !== "") {
+      const jk = jnsKend.toUpperCase();
+      if (jk.includes("MOTOR")) {
+        allowed_vehicles = ["MOTOR_(DEMO)"];
+      } else if (jk.includes("GRANDMAX") || jk.includes("CARRY")) {
+        allowed_vehicles = ["MOTOR_(DEMO)", "GRANDMAX_BV", "GRANDMAX", "CARRY", "L_300", "L_300_RATA KABIN"];
+      } else if (jk.includes("L_300") || jk.includes("L300")) {
+        allowed_vehicles = ["MOTOR_(DEMO)", "GRANDMAX_BV", "GRANDMAX", "CARRY", "L_300", "L_300_RATA KABIN"];
+      } else if (jk.includes("ENGKEL")) {
+        allowed_vehicles = [
+          "MOTOR_(DEMO)", "GRANDMAX_BV", "GRANDMAX", "CARRY",
+          "L_300", "L_300_RATA KABIN",
+          "CD_ENGKEL_BOX_KECIL", "CD_ENGKEL_FE71"
+        ];
+      } else if (jk.includes("DOUBLE")) {
+        allowed_vehicles = [
+          "MOTOR_(DEMO)", "GRANDMAX_BV", "GRANDMAX", "CARRY",
+          "L_300", "L_300_RATA KABIN",
+          "CD_ENGKEL_BOX_KECIL", "CD_ENGKEL_FE71",
+          "CD_DOUBLE_FE73"
+        ];
+      }
+    }
+
     invoices.push({
       CUSTNO: custno,
       CUSTNAME: String(norm["CUSTNAME"] ?? "").trim(),
@@ -47,6 +81,12 @@ export function parseInvoiceFile(buffer: ArrayBuffer, filename: string): Pending
       TOTAL_BERAT_KG: toNum(norm["TOTAL_BERAT_KG"]),
       TOTAL_KARTON: toNum(norm["TOTAL_KARTON"]),
       JNS_KEND: norm["JNS_KEND"] ? String(norm["JNS_KEND"]).trim() : undefined,
+      GROUPPAYER: grouppayer,
+      ZONE: zone,
+      ALLOWED_VEHICLES: allowed_vehicles && allowed_vehicles.length > 0 ? allowed_vehicles.join(",") : undefined,
+      KECAMATAN: kecamatan,
+      KELURAHAN: kelurahan,
+      ALAMAT: alamat,
     });
   }
 
@@ -60,6 +100,16 @@ export function parseInvoiceFile(buffer: ArrayBuffer, filename: string): Pending
       existing.invoices.push(inv);
       existing.total_kubikasi_m3 += inv.TOTAL_KUBIKASI_M3;
       existing.total_berat_kg += inv.TOTAL_BERAT_KG;
+      existing.total_karton = (existing.total_karton ?? 0) + inv.TOTAL_KARTON;
+      existing.total_neto = (existing.total_neto ?? 0) + inv.TOTAL_NETO;
+      if (!existing.grouppayer && inv.GROUPPAYER) existing.grouppayer = inv.GROUPPAYER;
+      if (!existing.zone && inv.ZONE) existing.zone = inv.ZONE;
+      if (!existing.kecamatan && inv.KECAMATAN) existing.kecamatan = inv.KECAMATAN;
+      if (!existing.kelurahan && inv.KELURAHAN) existing.kelurahan = inv.KELURAHAN;
+      if (!existing.alamat && inv.ALAMAT) existing.alamat = inv.ALAMAT;
+      if (!existing.allowed_vehicles && inv.ALLOWED_VEHICLES) {
+        existing.allowed_vehicles = inv.ALLOWED_VEHICLES.split(",").map((s) => s.trim()).filter(Boolean);
+      }
     } else {
       grouped.set(inv.CUSTNO, {
         custno: inv.CUSTNO,
@@ -69,7 +119,15 @@ export function parseInvoiceFile(buffer: ArrayBuffer, filename: string): Pending
         invoices: [inv],
         total_kubikasi_m3: inv.TOTAL_KUBIKASI_M3,
         total_berat_kg: inv.TOTAL_BERAT_KG,
+        total_karton: inv.TOTAL_KARTON,
+        total_neto: inv.TOTAL_NETO,
         jns_kend: inv.JNS_KEND ?? "TRONTON",
+        grouppayer: inv.GROUPPAYER,
+        zone: inv.ZONE,
+        kecamatan: inv.KECAMATAN,
+        kelurahan: inv.KELURAHAN,
+        alamat: inv.ALAMAT,
+        allowed_vehicles: inv.ALLOWED_VEHICLES ? inv.ALLOWED_VEHICLES.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
       });
     }
   }
@@ -100,11 +158,18 @@ export function parseVehicleFile(buffer: ArrayBuffer, filename: string): Vehicle
     const kubikase = toNum(norm["KUBIKASE"]);
     const tonase = toNum(norm["TONASE"]);
     if (!norm["NO_KEND"] || kubikase <= 0 || tonase <= 0) continue;
+
+    const zonesRaw = norm["ZONES"] ?? norm["ASSIGNED_ZONES"] ?? norm["GROUPKECAMATAN"];
+    const zones = zonesRaw ? String(zonesRaw).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+    const maxGp = toNum(norm["MAX_GROUPPAYER"] ?? norm["TMSMAXGROUPPAYER"]);
+
     vehicles.push({
       JNS_KEND: String(norm["JNS_KEND"] ?? "").trim(),
       NO_KEND: String(norm["NO_KEND"]).trim(),
       KUBIKASE: kubikase,
       TONASE: tonase,
+      ZONES: zones && zones.length > 0 ? zones : undefined,
+      MAX_GROUPPAYER: maxGp > 0 ? maxGp : undefined,
     });
   }
 

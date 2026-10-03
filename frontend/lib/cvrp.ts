@@ -4,7 +4,13 @@ import { DEPOT_COORDS, ROUTE_COLORS } from "./types";
 // ---------------------------------------------------------------------------
 // OSRM Table API — fetch NxN duration matrix from local OSRM instance
 // ---------------------------------------------------------------------------
-const OSRM_BASE = "http://20.187.66.251:5000";
+export function getOsrmBase(): string {
+  if (process.env.NEXT_PUBLIC_OSRM_API_URL) return process.env.NEXT_PUBLIC_OSRM_API_URL;
+  if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    return "/api/osrm";
+  }
+  return "http://ficom.mayora.co.id:8081/osrm-api";
+}
 
 interface OsrmTableResponse {
   code: string;
@@ -32,12 +38,12 @@ export async function fetchDurationMatrix(
   // when using the `sources` and `destinations` query params via POST.
   // However, the simplest cross-version workaround is to pass coordinates
   // in the URL but fall back to POST form-body when the URL would be too long.
-  const url = `${OSRM_BASE}/table/v1/driving/${coordStr}?annotations=duration`;
+  const url = `${getOsrmBase()}/table/v1/driving/${coordStr}?annotations=duration`;
 
   let res: Response;
   if (url.length > 4000) {
     // POST with coordinates in the body to avoid HTTP 414 / 400
-    res = await fetch(`${OSRM_BASE}/table/v1/driving`, {
+    res = await fetch(`${getOsrmBase()}/table/v1/driving`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: `coordinates=${encodeURIComponent(coordStr)}&annotations=duration`,
@@ -172,7 +178,7 @@ export async function fetchTripRoute(
   const chunkCoords = await Promise.all(
     chunks.map(async (chunk): Promise<[number, number][]> => {
       const coordStr = chunk.join(";");
-      const url = `${OSRM_BASE}/route/v1/driving/${coordStr}?overview=full&geometries=geojson`;
+      const url = `${getOsrmBase()}/route/v1/driving/${coordStr}?overview=full&geometries=geojson&continue_straight=false`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`OSRM Route API error: HTTP ${res.status}`);
       const data: OsrmRouteResponse = await res.json();
