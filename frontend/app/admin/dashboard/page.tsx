@@ -248,14 +248,6 @@ export default function FleetDispatchPage() {
     isSuccess: boolean;
   } | null>(null);
 
-  useEffect(() => {
-    if (!completionInfo) return;
-    const timer = setTimeout(() => {
-      setCompletionInfo(null);
-    }, 6000);
-    return () => clearTimeout(timer);
-  }, [completionInfo]);
-
   // --- Centralized Processing Log Container Ref & Auto-scroll ---
   const centralLogContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1627,15 +1619,13 @@ export default function FleetDispatchPage() {
 
             {/* Elemen Atas: ThinkingOrb atau Status Icon */}
             {completionInfo ? (
-              <div className="relative z-10 flex items-center justify-center w-24 h-24 my-2">
-                <div className={`absolute inset-0 ${completionInfo.isSuccess ? "bg-emerald-100" : "bg-rose-100"} rounded-full blur-xl animate-pulse`} />
-                <div className={`relative flex h-16 w-16 items-center justify-center rounded-2xl ${completionInfo.isSuccess ? "bg-emerald-500 shadow-emerald-500/25" : "bg-rose-500 shadow-rose-500/25"} text-white shadow-xl animate-in zoom-in-75 duration-300`}>
-                  {completionInfo.isSuccess ? (
-                    <CheckCircle2 className="h-9 w-9 text-white stroke-[2.2]" />
-                  ) : (
-                    <AlertTriangle className="h-9 w-9 text-white stroke-[2.2]" />
-                  )}
-                </div>
+              <div className="relative z-10 flex items-center justify-center w-20 h-20 my-2">
+                <div className={`absolute inset-0 ${completionInfo.isSuccess ? "bg-emerald-100/70" : "bg-rose-100/70"} rounded-full blur-xl animate-pulse`} />
+                {completionInfo.isSuccess ? (
+                  <CheckCircle2 className="relative h-16 w-16 text-emerald-500 drop-shadow-sm animate-in zoom-in-75 duration-300 stroke-[2.2]" />
+                ) : (
+                  <AlertTriangle className="relative h-16 w-16 text-rose-500 drop-shadow-sm animate-in zoom-in-75 duration-300 stroke-[2.2]" />
+                )}
               </div>
             ) : (
               <div className="relative z-10 flex items-center justify-center w-28 h-28 my-2">
