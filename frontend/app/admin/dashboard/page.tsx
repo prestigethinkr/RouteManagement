@@ -1352,7 +1352,11 @@ export default function FleetDispatchPage() {
           total_neto: o.total_neto || 0,
           recap_no: o.recap_no,
         })),
-        vehicles: availableVehicles.map((v) => ({
+        vehicles: [
+          ...availableVehicles,
+          ...assignedRoutes.map((r) => r.vehicle)
+        ].filter((v, i, a) => a.findIndex((t) => t.NO_KEND === v.NO_KEND) === i)
+        .map((v) => ({
           id: v.NO_KEND,
           max_m3: v.KUBIKASE,
           max_kg: v.TONASE,
