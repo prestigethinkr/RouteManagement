@@ -537,6 +537,8 @@ export default function FleetDispatchPage() {
         title: "Failed to parse invoices",
         description: err instanceof Error ? err.message : "Unknown error",
       });
+    } finally {
+      e.target.value = "";
     }
   }
 
@@ -561,6 +563,8 @@ export default function FleetDispatchPage() {
         title: "Failed to parse fleet file",
         description: err instanceof Error ? err.message : "Unknown error",
       });
+    } finally {
+      e.target.value = "";
     }
   }
 
@@ -2413,7 +2417,7 @@ export default function FleetDispatchPage() {
               📁 Input Data (Excel / CSV)
             </p>
 
-            <input ref={invoiceInputRef} type="file" accept=".csv,.xls,.xlsx" className="hidden" onChange={handleInvoiceFile} />
+            <input ref={invoiceInputRef} type="file" accept=".csv,.txt,.tsv,.xls,.xlsx" className="hidden" onChange={handleInvoiceFile} />
             <button
               onClick={() => invoiceInputRef.current?.click()}
               className={`flex w-full items-center gap-2.5 rounded-xl border-2 border-dashed p-2.5 text-left transition-all cursor-pointer ${
@@ -2427,7 +2431,7 @@ export default function FleetDispatchPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs font-bold text-slate-800">
-                  {invoiceFileName ?? "1. Upload Invoices (Excel)"}
+                  {invoiceFileName ?? "1. Upload Invoices (Excel / CSV)"}
                 </p>
                 <p className="text-[10px] text-slate-500">
                   {pendingOutlets.length > 0
@@ -2438,7 +2442,7 @@ export default function FleetDispatchPage() {
               <UploadCloud className="h-4 w-4 shrink-0 text-slate-400" />
             </button>
 
-            <input ref={vehicleInputRef} type="file" accept=".csv,.xls,.xlsx" className="hidden" onChange={handleVehicleFile} />
+            <input ref={vehicleInputRef} type="file" accept=".csv,.txt,.tsv,.xls,.xlsx" className="hidden" onChange={handleVehicleFile} />
             <button
               onClick={() => vehicleInputRef.current?.click()}
               className={`flex w-full items-center gap-2.5 rounded-xl border-2 border-dashed p-2.5 text-left transition-all cursor-pointer ${
@@ -2452,7 +2456,7 @@ export default function FleetDispatchPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs font-bold text-slate-800">
-                  {vehicleFileName ?? "2. Upload Fleet (Excel)"}
+                  {vehicleFileName ?? "2. Upload Fleet (Excel / CSV)"}
                 </p>
                 <p className="text-[10px] text-slate-500">
                   {availableVehicles.length > 0
