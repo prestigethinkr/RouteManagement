@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useRef, useState, useMemo, useEffect } from "react";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
-import type { PendingOutlet, Vehicle, AssignedRoute, GeoJsonLineString } from "@/lib/types";
+import type { PendingOutlet, Vehicle, AssignedRoute, GeoJsonLineString, SolverLogItem } from "@/lib/types";
 import { DEPOT_COORDS, ROUTE_COLORS } from "@/lib/types";
 import { parseInvoiceFile, parseVehicleFile } from "@/lib/parse-files";
 import { Button } from "@/components/ui/button";
@@ -39,8 +39,9 @@ import {
   RotateCcw,
   Sparkles,
   ArrowRight,
+  Copy,
+  Check,
 } from "lucide-react";
-import SolverConsoleModal, { SolverLogItem } from "@/components/SolverConsoleModal";
 import RouteEditModal from "@/components/RouteEditModal";
 import RouteEditorDrawer from "@/components/RouteEditorDrawer";
 
@@ -239,7 +240,6 @@ export default function FleetDispatchPage() {
   const [solverProgress, setSolverProgress] = useState(0);
   const [solverStage, setSolverStage] = useState("");
   const [isLogConsoleOpen, setIsLogConsoleOpen] = useState(false);
-  const [isLogConsoleMinimized, setIsLogConsoleMinimized] = useState(false);
 
   // --- Optimization Completion Notification in Central Card ---
   const [completionInfo, setCompletionInfo] = useState<{
@@ -247,14 +247,48 @@ export default function FleetDispatchPage() {
     description: string;
     isSuccess: boolean;
   } | null>(null);
+  const [lastCompletionInfo, setLastCompletionInfo] = useState<{
+    title: string;
+    description: string;
+    isSuccess: boolean;
+  } | null>(null);
+
+  const [isCopiedLogs, setIsCopiedLogs] = useState(false);
+  const copyAllLogs = () => {
+    if (solverLogs.length === 0) return;
+    const text = solverLogs
+      .map((l) => `[${l.time}] [${l.stage}] (${l.percent}%) ${l.message}`)
+      .join("\n");
+    navigator.clipboard.writeText(text);
+    setIsCopiedLogs(true);
+    setTimeout(() => setIsCopiedLogs(false), 2000);
+  };
+
+  const isCenterModalOpen = assigning || completionInfo !== null || isLogConsoleOpen;
+  const activeCompletionInfo =
+    completionInfo ||
+    (isLogConsoleOpen && !assigning
+      ? lastCompletionInfo || {
+          title: "Log Proses Dispatch",
+          description: `${solverLogs.length} event log tercatat · Status: ${solverStage || "SELESAI"}`,
+          isSuccess: solverStage !== "ERROR" && !solverLogs.some((l) => l.level === "ERROR"),
+        }
+      : null);
+
+  const closeCentralModal = () => {
+    setCompletionInfo(null);
+    setIsLogConsoleOpen(false);
+    setAssigning(false);
+    setAssignStatusText("");
+  };
 
   // --- Centralized Processing Log Container Ref & Auto-scroll ---
   const centralLogContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if ((assigning || completionInfo) && centralLogContainerRef.current) {
+    if (isCenterModalOpen && centralLogContainerRef.current) {
       centralLogContainerRef.current.scrollTop = centralLogContainerRef.current.scrollHeight;
     }
-  }, [solverLogs, assigning, completionInfo]);
+  }, [solverLogs, isCenterModalOpen]);
 
   // --- Accordion & map focus state ---
   const [expandedFleets, setExpandedFleets] = useState<Record<string, boolean>>({});
@@ -986,17 +1020,21 @@ export default function FleetDispatchPage() {
         },
       ]);
 
-      setCompletionInfo({
+      const successInfo = {
         title: "Rute Berhasil Dioptimasi",
         description: `${reconstructedRoutes.length} armada dialokasikan · ${unassignedList.length} toko belum teralokasi`,
         isSuccess: true,
-      });
+      };
+      setCompletionInfo(successInfo);
+      setLastCompletionInfo(successInfo);
     } catch (err) {
-      setCompletionInfo({
+      const errorInfo = {
         title: "Optimasi Gagal",
         description: err instanceof Error ? err.message : "Terjadi kesalahan sistem",
         isSuccess: false,
-      });
+      };
+      setCompletionInfo(errorInfo);
+      setLastCompletionInfo(errorInfo);
     } finally {
       setAssigning(false);
       setAssignStatusText("");
@@ -1369,17 +1407,21 @@ export default function FleetDispatchPage() {
       setIsLeftPanelOpen(true);
       setSolverProgress(100);
       setSolverStage("DONE");
-      setCompletionInfo({
+      const tripSuccessInfo = {
         title: `Ritase ${nextTripNumber} Berhasil Dibuat`,
         description: `${nextTripRoutes.length} armada diberangkatkan, ${remainingUnassigned.length} toko tersisa`,
         isSuccess: true,
-      });
+      };
+      setCompletionInfo(tripSuccessInfo);
+      setLastCompletionInfo(tripSuccessInfo);
     } catch (err) {
-      setCompletionInfo({
+      const tripErrorInfo = {
         title: `Ritase ${nextTripNumber} Gagal`,
         description: err instanceof Error ? err.message : "Terjadi kesalahan sistem",
         isSuccess: false,
-      });
+      };
+      setCompletionInfo(tripErrorInfo);
+      setLastCompletionInfo(tripErrorInfo);
     } finally {
       setAssigning(false);
       setAssignStatusText("");
@@ -1598,19 +1640,15 @@ export default function FleetDispatchPage() {
       </div>
 
       {/* ════════════ 1.5 PROCESSING CARD OVERLAY ════════════ */}
-      {(assigning || completionInfo) && (
+      {isCenterModalOpen && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/30 backdrop-blur-sm px-4 py-8 overflow-hidden">
           <div className="relative w-full max-w-3xl bg-white rounded-3xl shadow-2xl border border-slate-200 p-8 flex flex-col items-center overflow-hidden animate-in fade-in zoom-in-95 duration-300">
             {/* Ambient subtle glow */}
-            <div className={`absolute w-[400px] h-[400px] ${completionInfo?.isSuccess ? "bg-emerald-100/60" : completionInfo ? "bg-rose-100/60" : "bg-blue-100/50"} rounded-full blur-3xl pointer-events-none -top-20 transition-colors duration-500`} />
+            <div className={`absolute w-[400px] h-[400px] ${activeCompletionInfo?.isSuccess ? "bg-emerald-100/60" : activeCompletionInfo ? "bg-rose-100/60" : "bg-blue-100/50"} rounded-full blur-3xl pointer-events-none -top-20 transition-colors duration-500`} />
 
             {/* Close Button (X) */}
             <button
-              onClick={() => {
-                setCompletionInfo(null);
-                setAssigning(false);
-                setAssignStatusText("");
-              }}
+              onClick={closeCentralModal}
               className="absolute top-4 right-4 z-20 p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors cursor-pointer"
               title="Tutup"
             >
@@ -1618,10 +1656,10 @@ export default function FleetDispatchPage() {
             </button>
 
             {/* Elemen Atas: ThinkingOrb atau Status Icon */}
-            {completionInfo ? (
+            {activeCompletionInfo ? (
               <div className="relative z-10 flex items-center justify-center w-20 h-20 my-2">
-                <div className={`absolute inset-0 ${completionInfo.isSuccess ? "bg-emerald-100/70" : "bg-rose-100/70"} rounded-full blur-xl animate-pulse`} />
-                {completionInfo.isSuccess ? (
+                <div className={`absolute inset-0 ${activeCompletionInfo.isSuccess ? "bg-emerald-100/70" : "bg-rose-100/70"} rounded-full blur-xl animate-pulse`} />
+                {activeCompletionInfo.isSuccess ? (
                   <CheckCircle2 className="relative h-16 w-16 text-emerald-500 drop-shadow-sm animate-in zoom-in-75 duration-300 stroke-[2.2]" />
                 ) : (
                   <AlertTriangle className="relative h-16 w-16 text-rose-500 drop-shadow-sm animate-in zoom-in-75 duration-300 stroke-[2.2]" />
@@ -1639,31 +1677,27 @@ export default function FleetDispatchPage() {
             {/* Elemen Tengah: Teks Indikator Progres atau Notifikasi Hasil */}
             <div className="relative z-10 text-center max-w-lg mb-6 space-y-2">
               <h2 className="text-xl font-bold tracking-tight text-slate-800">
-                {completionInfo ? completionInfo.title : "Proses Kalkulasi Rute"}
+                {activeCompletionInfo ? activeCompletionInfo.title : "Proses Kalkulasi Rute"}
               </h2>
               <p className="text-xs sm:text-sm text-slate-500 font-medium">
-                {completionInfo
-                  ? completionInfo.description
+                {activeCompletionInfo
+                  ? activeCompletionInfo.description
                   : assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
               </p>
 
               {/* Progress Bar atau Tombol Selesai */}
-              {completionInfo ? (
+              {activeCompletionInfo ? (
                 <div className="pt-2 flex items-center justify-center gap-3">
                   <Button
-                    onClick={() => {
-                      setCompletionInfo(null);
-                      setAssigning(false);
-                      setAssignStatusText("");
-                    }}
+                    onClick={closeCentralModal}
                     className={`text-white font-bold px-6 py-2.5 rounded-xl shadow-md text-xs gap-2 cursor-pointer transition-all hover:scale-105 ${
-                      completionInfo.isSuccess
+                      activeCompletionInfo.isSuccess
                         ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20"
                         : "bg-slate-700 hover:bg-slate-800 shadow-slate-500/20"
                     }`}
                   >
-                    <span>{completionInfo.isSuccess ? "Lihat Rute di Peta" : "Tutup"}</span>
-                    {completionInfo.isSuccess && <ArrowRight className="h-4 w-4" />}
+                    <span>{hasRoutes ? "Lihat Rute di Peta" : "Tutup"}</span>
+                    {hasRoutes && <ArrowRight className="h-4 w-4" />}
                   </Button>
                 </div>
               ) : (
@@ -1696,6 +1730,25 @@ export default function FleetDispatchPage() {
                     {solverLogs.length} log
                   </span>
                 </div>
+                {solverLogs.length > 0 && (
+                  <button
+                    onClick={copyAllLogs}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors border border-slate-200 cursor-pointer"
+                    title="Salin seluruh log ke clipboard"
+                  >
+                    {isCopiedLogs ? (
+                      <>
+                        <Check className="h-3 w-3 text-emerald-600" />
+                        <span className="text-emerald-600 font-bold">Tersalin!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3 text-slate-500" />
+                        <span>Salin Log</span>
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
 
               {/* Log Messages (Auto-scrolled) */}
@@ -1862,12 +1915,12 @@ export default function FleetDispatchPage() {
           {(solverLogs.length > 0 || assigning) && (
             <Button
               variant="outline"
-              onClick={() => setIsLogConsoleOpen(!isLogConsoleOpen)}
-              className={`border-slate-200 text-xs h-8 px-2.5 rounded-xl gap-1.5 font-semibold transition-colors ${isLogConsoleOpen
+              onClick={() => setIsLogConsoleOpen(!isCenterModalOpen)}
+              className={`border-slate-200 text-xs h-8 px-2.5 rounded-xl gap-1.5 font-semibold transition-colors ${isCenterModalOpen
                 ? "bg-blue-50 text-blue-700 border-blue-300"
                 : "text-slate-700 hover:bg-slate-50"
                 }`}
-              title={isLogConsoleOpen ? "Hide Solver Console" : "Open Solver Console"}
+              title={isCenterModalOpen ? "Tutup Log Proses" : "Buka Log Proses"}
             >
               {assigning ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
@@ -2774,7 +2827,7 @@ export default function FleetDispatchPage() {
       )}
 
       {/* ════════════ 5. REOPEN FLOATING PILL (DOCKED BOTTOM-RIGHT) ════════════ */}
-      {!isLogConsoleOpen && !assigning && solverLogs.length > 0 && (
+      {!isCenterModalOpen && solverLogs.length > 0 && (
         <button
           onClick={() => setIsLogConsoleOpen(true)}
           className="fixed bottom-5 right-5 z-[2000] flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/95 hover:bg-slate-50 border border-slate-200/90 shadow-xl text-xs text-slate-700 transition-all backdrop-blur-md cursor-pointer font-bold hover:shadow-2xl hover:border-slate-300"
@@ -2787,19 +2840,6 @@ export default function FleetDispatchPage() {
           </span>
         </button>
       )}
-
-      {/* ════════════ 6. REAL-TIME SOLVER CONSOLE MODAL ════════════ */}
-      <SolverConsoleModal
-        isOpen={isLogConsoleOpen && !assigning}
-        onClose={() => setIsLogConsoleOpen(false)}
-        isMinimized={isLogConsoleMinimized}
-        onToggleMinimize={() => setIsLogConsoleMinimized(!isLogConsoleMinimized)}
-        logs={solverLogs}
-        progress={solverProgress}
-        currentStage={solverStage}
-        isSolving={assigning}
-        onClearLogs={() => setSolverLogs([])}
-      />
 
       {/* ════════════ 7. FLEET UTILIZATION SUMMARY MODAL ════════════ */}
       {isSummaryOpen && (

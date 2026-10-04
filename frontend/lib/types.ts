@@ -104,3 +104,11 @@ export const ROUTE_COLORS = [
   "#4f46e5", // indigo
   "#059669", // emerald
 ];
+
+export interface SolverLogItem {
+  time: string;
+  stage: string;
+  percent: number;
+  message: string;
+  level: string;
+}
