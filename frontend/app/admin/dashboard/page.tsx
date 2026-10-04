@@ -38,6 +38,7 @@ import {
   Search,
   RotateCcw,
   Sparkles,
+  ArrowRight,
 } from "lucide-react";
 import SolverConsoleModal, { SolverLogItem } from "@/components/SolverConsoleModal";
 import RouteEditModal from "@/components/RouteEditModal";
@@ -240,13 +241,28 @@ export default function FleetDispatchPage() {
   const [isLogConsoleOpen, setIsLogConsoleOpen] = useState(false);
   const [isLogConsoleMinimized, setIsLogConsoleMinimized] = useState(false);
 
+  // --- Optimization Completion Notification in Central Card ---
+  const [completionInfo, setCompletionInfo] = useState<{
+    title: string;
+    description: string;
+    isSuccess: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!completionInfo) return;
+    const timer = setTimeout(() => {
+      setCompletionInfo(null);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [completionInfo]);
+
   // --- Centralized Processing Log Container Ref & Auto-scroll ---
   const centralLogContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (assigning && centralLogContainerRef.current) {
+    if ((assigning || completionInfo) && centralLogContainerRef.current) {
       centralLogContainerRef.current.scrollTop = centralLogContainerRef.current.scrollHeight;
     }
-  }, [solverLogs, assigning]);
+  }, [solverLogs, assigning, completionInfo]);
 
   // --- Accordion & map focus state ---
   const [expandedFleets, setExpandedFleets] = useState<Record<string, boolean>>({});
@@ -978,15 +994,16 @@ export default function FleetDispatchPage() {
         },
       ]);
 
-      toast({
+      setCompletionInfo({
         title: "Rute Berhasil Dioptimasi",
         description: `${reconstructedRoutes.length} armada dialokasikan · ${unassignedList.length} toko belum teralokasi`,
+        isSuccess: true,
       });
     } catch (err) {
-      toast({
-        variant: "destructive",
+      setCompletionInfo({
         title: "Optimasi Gagal",
         description: err instanceof Error ? err.message : "Terjadi kesalahan sistem",
+        isSuccess: false,
       });
     } finally {
       setAssigning(false);
@@ -1360,15 +1377,16 @@ export default function FleetDispatchPage() {
       setIsLeftPanelOpen(true);
       setSolverProgress(100);
       setSolverStage("DONE");
-      toast({
+      setCompletionInfo({
         title: `Ritase ${nextTripNumber} Berhasil Dibuat`,
         description: `${nextTripRoutes.length} armada diberangkatkan, ${remainingUnassigned.length} toko tersisa`,
+        isSuccess: true,
       });
     } catch (err) {
-      toast({
-        variant: "destructive",
+      setCompletionInfo({
         title: `Ritase ${nextTripNumber} Gagal`,
         description: err instanceof Error ? err.message : "Terjadi kesalahan sistem",
+        isSuccess: false,
       });
     } finally {
       setAssigning(false);
@@ -1588,45 +1606,93 @@ export default function FleetDispatchPage() {
       </div>
 
       {/* ════════════ 1.5 PROCESSING CARD OVERLAY ════════════ */}
-      {assigning && (
+      {(assigning || completionInfo) && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/30 backdrop-blur-sm px-4 py-8 overflow-hidden">
           <div className="relative w-full max-w-3xl bg-white rounded-3xl shadow-2xl border border-slate-200 p-8 flex flex-col items-center overflow-hidden animate-in fade-in zoom-in-95 duration-300">
             {/* Ambient subtle glow */}
-            <div className="absolute w-[400px] h-[400px] bg-blue-100/50 rounded-full blur-3xl pointer-events-none -top-20" />
+            <div className={`absolute w-[400px] h-[400px] ${completionInfo?.isSuccess ? "bg-emerald-100/60" : completionInfo ? "bg-rose-100/60" : "bg-blue-100/50"} rounded-full blur-3xl pointer-events-none -top-20 transition-colors duration-500`} />
 
-            {/* Elemen Atas: ThinkingOrb */}
-            <div className="relative z-10 flex items-center justify-center w-28 h-28 my-2">
-              <div className="absolute inset-0 bg-blue-100/60 rounded-full blur-2xl animate-pulse" />
-              <div className="scale-[1.65] transform-gpu">
-                <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="light" />
+            {/* Close Button (X) */}
+            <button
+              onClick={() => {
+                setCompletionInfo(null);
+                setAssigning(false);
+                setAssignStatusText("");
+              }}
+              className="absolute top-4 right-4 z-20 p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors cursor-pointer"
+              title="Tutup"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            {/* Elemen Atas: ThinkingOrb atau Status Icon */}
+            {completionInfo ? (
+              <div className="relative z-10 flex items-center justify-center w-24 h-24 my-2">
+                <div className={`absolute inset-0 ${completionInfo.isSuccess ? "bg-emerald-100" : "bg-rose-100"} rounded-full blur-xl animate-pulse`} />
+                <div className={`relative flex h-16 w-16 items-center justify-center rounded-2xl ${completionInfo.isSuccess ? "bg-emerald-500 shadow-emerald-500/25" : "bg-rose-500 shadow-rose-500/25"} text-white shadow-xl animate-in zoom-in-75 duration-300`}>
+                  {completionInfo.isSuccess ? (
+                    <CheckCircle2 className="h-9 w-9 text-white stroke-[2.2]" />
+                  ) : (
+                    <AlertTriangle className="h-9 w-9 text-white stroke-[2.2]" />
+                  )}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="relative z-10 flex items-center justify-center w-28 h-28 my-2">
+                <div className="absolute inset-0 bg-blue-100/60 rounded-full blur-2xl animate-pulse" />
+                <div className="scale-[1.65] transform-gpu">
+                  <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="light" />
+                </div>
+              </div>
+            )}
 
-            {/* Elemen Tengah: Teks Indikator Progres */}
+            {/* Elemen Tengah: Teks Indikator Progres atau Notifikasi Hasil */}
             <div className="relative z-10 text-center max-w-lg mb-6 space-y-2">
               <h2 className="text-xl font-bold tracking-tight text-slate-800">
-                Proses Kalkulasi Rute
+                {completionInfo ? completionInfo.title : "Proses Kalkulasi Rute"}
               </h2>
               <p className="text-xs sm:text-sm text-slate-500 font-medium">
-                {assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
+                {completionInfo
+                  ? completionInfo.description
+                  : assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
               </p>
 
-              {/* Progress Bar & Stage Badge */}
-              <div className="pt-2 flex flex-col items-center gap-2">
-                <div className="w-72 sm:w-96 bg-slate-100 rounded-full h-2.5 overflow-hidden border border-slate-200 shadow-inner">
-                  <div
-                    className="bg-blue-600 h-full rounded-full transition-all duration-300 ease-out"
-                    style={{ width: `${Math.max(5, Math.min(100, solverProgress))}%` }}
-                  />
+              {/* Progress Bar atau Tombol Selesai */}
+              {completionInfo ? (
+                <div className="pt-2 flex items-center justify-center gap-3">
+                  <Button
+                    onClick={() => {
+                      setCompletionInfo(null);
+                      setAssigning(false);
+                      setAssignStatusText("");
+                    }}
+                    className={`text-white font-bold px-6 py-2.5 rounded-xl shadow-md text-xs gap-2 cursor-pointer transition-all hover:scale-105 ${
+                      completionInfo.isSuccess
+                        ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20"
+                        : "bg-slate-700 hover:bg-slate-800 shadow-slate-500/20"
+                    }`}
+                  >
+                    <span>{completionInfo.isSuccess ? "Lihat Rute di Peta" : "Tutup"}</span>
+                    {completionInfo.isSuccess && <ArrowRight className="h-4 w-4" />}
+                  </Button>
                 </div>
-                <div className="flex items-center gap-2.5 text-xs font-mono text-slate-500">
-                  <span className="font-bold text-blue-600">{solverProgress}%</span>
-                  <span className="text-slate-400">•</span>
-                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold uppercase tracking-wider border border-slate-200">
-                    {solverStage || "PROSES"}
-                  </span>
+              ) : (
+                <div className="pt-2 flex flex-col items-center gap-2">
+                  <div className="w-72 sm:w-96 bg-slate-100 rounded-full h-2.5 overflow-hidden border border-slate-200 shadow-inner">
+                    <div
+                      className="bg-blue-600 h-full rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${Math.max(5, Math.min(100, solverProgress))}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2.5 text-xs font-mono text-slate-500">
+                    <span className="font-bold text-blue-600">{solverProgress}%</span>
+                    <span className="text-slate-400">•</span>
+                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold uppercase tracking-wider border border-slate-200">
+                      {solverStage || "PROSES"}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Elemen Bawah: Log Viewer */}
