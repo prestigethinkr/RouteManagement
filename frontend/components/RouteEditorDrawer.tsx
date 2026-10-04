@@ -650,11 +650,16 @@ export default function RouteEditorDrawer({
                 const vM3Pct = v.KUBIKASE > 0 ? (r.currentM3 / v.KUBIKASE) * 100 : 0;
                 return (
                   <option key={v.NO_KEND} value={v.NO_KEND}>
-                    {v.NO_KEND} ({v.JNS_KEND}) — {r.outlets.length} stops [EPE: {Math.max(vKgPct, vM3Pct).toFixed(0)}%]
+                    {v.NO_KEND} {r.recap_no ? `| Rekap: #${r.recap_no}` : ""} ({v.JNS_KEND}) — {r.outlets.length} stops [EPE: {Math.max(vKgPct, vM3Pct).toFixed(0)}%]
                   </option>
                 );
               })}
             </select>
+            {currentRoute?.recap_no && (
+              <span className="px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-amber-50 text-amber-800 border border-amber-300 shadow-2xs shrink-0">
+                Rekap: #{currentRoute.recap_no}
+              </span>
+            )}
           </div>
 
           {/* Close Drawer Button */}
@@ -949,7 +954,7 @@ export default function RouteEditorDrawer({
           <div className="p-2 px-3 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-blue-900">
-                Faktur Mapping ({vehicle?.NO_KEND})
+                Faktur Mapping ({vehicle?.NO_KEND}{currentRoute?.recap_no ? ` | Rekap: #${currentRoute.recap_no}` : ""})
               </span>
               <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
                 {localAssigned.length} stops

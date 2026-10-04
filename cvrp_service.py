@@ -37,9 +37,10 @@ import pandas as pd
 
 import httpx
 import numpy as np
+import io
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 from ortools.util import optional_boolean_pb2
 from pydantic import BaseModel, Field
@@ -113,6 +114,9 @@ class InvoiceIn(BaseModel):
     invno: str
     m3: float = Field(default=0.0, ge=0)
     kg: float = Field(default=0.0, ge=0)
+    total_karton: float | None = 0.0
+    total_neto: float | None = 0.0
+    recap_no: str | None = None
 
 
 class OutletIn(BaseModel):
@@ -125,6 +129,9 @@ class OutletIn(BaseModel):
     custname: str | None = ""
     jns_kend: str | None = ""
     invoices: list[InvoiceIn] = Field(default_factory=list)
+    total_karton: float | None = 0.0
+    total_neto: float | None = 0.0
+    recap_no: str | None = None
     # ── Matrix constraint fields (optional — only used when use_matrix_constraints=true) ──
     allowed_vehicles: list[str] = Field(
         default_factory=list,
@@ -195,6 +202,10 @@ class OptimizeRequest(BaseModel):
         le=1.0,
         description="Minimum EPE threshold (0.0 to 1.0, e.g. 0.80 for 80%). Routes with EPE below this threshold are cancelled and their outlets returned to unassigned.",
     )
+    start_recap_no: int = Field(
+        default=10000000,
+        description="Starting 8-digit recap number, e.g. 10000000",
+    )
     stream: bool = Field(
         default=False,
         description="If true, stream real-time logs and progress as Server-Sent Events (SSE)",
@@ -209,6 +220,7 @@ class AssignedRouteOut(BaseModel):
     total_duration_s: float = 0.0   # total driving time in seconds (depot → stops → depot)
     total_distance_km: float = 0.0  # total driving distance in km (depot → stops → depot)
     cross_zone_swept_outlets: list[str] = Field(default_factory=list)
+    recap_no: str | None = None
 
 
 class OptimizeResponse(BaseModel):
@@ -216,6 +228,20 @@ class OptimizeResponse(BaseModel):
     unassigned_outlets: list[str]
     pruned_routes_count: int = 0
     split_outlets: list[OutletIn] = []
+    excel_filename: str | None = None
+    download_url: str | None = None
+
+
+class ExportExcelLogRequest(BaseModel):
+    depot: DepotIn
+    outlets: list[OutletIn]
+    vehicles: list[VehicleIn]
+    assigned_routes: list[AssignedRouteOut]
+    unassigned_outlets: list[str] = Field(default_factory=list)
+    algorithm: str = "ortools"
+    max_stops: int = 40
+    min_epe_threshold: float = 0.0
+    pruned_routes_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -2106,9 +2132,305 @@ def solve_cvrp_matrix(
 
 
 # ---------------------------------------------------------------------------
-# Excel export helper
+# Excel export helper & 3-Sheet Log Builder
 # ---------------------------------------------------------------------------
 _EXCEL_LOG_DIR = "logs"
+
+
+def build_cvrp_excel_bytes(
+    request_payload: OptimizeRequest | ExportExcelLogRequest,
+    response_data: OptimizeResponse | ExportExcelLogRequest,
+    execution_time_seconds: float = 0.0,
+    pruned_outlet_ids: set[str] | None = None,
+    expansion_map: dict[str, list[OutletIn]] | None = None,
+) -> tuple[bytes, str]:
+    """
+    Build an in-memory 3-sheet Excel (.xlsx) workbook for the CVRP run:
+      Sheet 1: Fleet Summary
+      Sheet 2: Invoice Detail
+      Sheet 3: Unassigned Detail
+    Returns: (excel_bytes, filename)
+    """
+    vehicle_map: dict[str, VehicleIn] = {v.id: v for v in request_payload.vehicles}
+    outlet_map: dict[str, OutletIn]   = {o.id: o for o in request_payload.outlets}
+
+    if expansion_map:
+        for node_id, members in expansion_map.items():
+            for m in members:
+                outlet_map[m.id] = m
+
+    if hasattr(response_data, "split_outlets") and response_data.split_outlets:
+        for so in response_data.split_outlets:
+            outlet_map[so.id] = so
+
+    def _detect_ritase(veh_id: str) -> int:
+        matches = re.findall(r"(?:Trip|Ritase)\s*(\d+)", veh_id, re.IGNORECASE)
+        if matches:
+            return max(int(x) for x in matches)
+        return 1
+
+    _SPLIT_REGEX = re.compile(r"\s*\(Split\s*\d+\)", re.IGNORECASE)
+
+    def _strip_split(text: str) -> str:
+        return _SPLIT_REGEX.sub("", text).strip()
+
+    def _get_outlet(oid: str) -> OutletIn | None:
+        if oid in outlet_map:
+            return outlet_map[oid]
+        split_m = re.match(r"^(.*)_SPLIT_(\d+)$", oid)
+        if split_m:
+            base_id, s_idx = split_m.group(1), split_m.group(2)
+            base_o = outlet_map.get(base_id)
+            if base_o:
+                clean_name = _strip_split(base_o.custname or base_id)
+                invs = []
+                if base_o.invoices:
+                    for inv in base_o.invoices:
+                        clean_invno = _strip_split(inv.invno)
+                        invs.append(InvoiceIn(
+                            invno=f"{clean_invno} (Split {s_idx})",
+                            m3=inv.m3,
+                            kg=inv.kg,
+                            total_karton=getattr(inv, "total_karton", 0.0),
+                            total_neto=getattr(inv, "total_neto", 0.0),
+                            recap_no=getattr(inv, "recap_no", None) or base_o.recap_no,
+                        ))
+                else:
+                    invs.append(InvoiceIn(
+                        invno=f"{base_id} (Split {s_idx})",
+                        m3=base_o.m3,
+                        kg=base_o.kg,
+                        total_karton=getattr(base_o, "total_karton", 0.0),
+                        total_neto=getattr(base_o, "total_neto", 0.0),
+                        recap_no=base_o.recap_no,
+                    ))
+                return OutletIn(
+                    id=oid,
+                    lat=base_o.lat,
+                    lng=base_o.lng,
+                    m3=base_o.m3,
+                    kg=base_o.kg,
+                    custname=f"{clean_name} (Split {s_idx})",
+                    jns_kend=base_o.jns_kend,
+                    invoices=invs,
+                    allowed_vehicles=base_o.allowed_vehicles,
+                    grouppayer=base_o.grouppayer,
+                    zone=base_o.zone,
+                    is_zone_inferred=base_o.is_zone_inferred,
+                    kecamatan=base_o.kecamatan,
+                    kelurahan=base_o.kelurahan,
+                    alamat=base_o.alamat,
+                    total_karton=getattr(base_o, "total_karton", 0.0),
+                    total_neto=getattr(base_o, "total_neto", 0.0),
+                    recap_no=base_o.recap_no,
+                )
+        return None
+
+    # ── Sheet 1: Fleet Summary ───────────────────────────────────────────
+    fleet_rows: list[dict] = []
+    for route in response_data.assigned_routes:
+        vehicle = vehicle_map.get(route.vehicle_id)
+        max_m3 = vehicle.max_m3 if vehicle else 0.0
+        max_kg = vehicle.max_kg if vehicle else 0.0
+        jns_kend = vehicle.jns_kend if vehicle else ""
+        zone_str = ", ".join(vehicle.zones) if (vehicle and vehicle.zones) else "ALL / FLOAT"
+        ritase = _detect_ritase(route.vehicle_id)
+
+        kub_pct = (route.total_m3 / max_m3 * 100.0) if max_m3 > 0 else 0.0
+        ton_pct = (route.total_kg / max_kg * 100.0) if max_kg > 0 else 0.0
+
+        dur_hrs = int(route.total_duration_s // 3600)
+        dur_mins = int((route.total_duration_s % 3600) // 60)
+        dur_str = f"{dur_hrs} jam {dur_mins} menit"
+
+        fleet_rows.append({
+            "No Recap": route.recap_no or "-",
+            "Plat Nomor (carno)": route.vehicle_id,
+            "Jenis Kendaraan (jns_kend)": jns_kend,
+            "Zone Kendaraan": zone_str,
+            "Ritase / Trip": ritase,
+            "Total Stops": len(route.route),
+            "Kapasitas M3": max_m3,
+            "Total M3": round(route.total_m3, 4),
+            "% M3": round(kub_pct, 2),
+            "Kapasitas KG": max_kg,
+            "Total KG": round(route.total_kg, 4),
+            "% KG": round(ton_pct, 2),
+            "Max EPE (%)": round(max(kub_pct, ton_pct), 2),
+            "Total Jarak (km)": round(route.total_distance_km, 2),
+            "Total Durasi (jam/menit)": dur_str,
+        })
+
+    df_fleet = pd.DataFrame(fleet_rows, columns=[
+        "No Recap", "Plat Nomor (carno)", "Jenis Kendaraan (jns_kend)", "Zone Kendaraan",
+        "Ritase / Trip", "Total Stops", "Kapasitas M3", "Total M3", "% M3",
+        "Kapasitas KG", "Total KG", "% KG", "Max EPE (%)", "Total Jarak (km)", "Total Durasi (jam/menit)",
+    ])
+
+    # ── Sheet 2: Invoice Detail ──────────────────────────────────────────
+    invoice_rows: list[dict] = []
+    for route in response_data.assigned_routes:
+        swept_set = set(getattr(route, "cross_zone_swept_outlets", []) or [])
+        recap_no_str = route.recap_no or "-"
+
+        for seq_idx, outlet_id in enumerate(route.route, start=1):
+            outlet = _get_outlet(outlet_id)
+            if outlet is None:
+                continue
+
+            is_swept = "YES" if (outlet_id in swept_set) else "NO"
+            is_inferred = "YES" if getattr(outlet, "is_zone_inferred", False) else "NO"
+            out_zone = outlet.zone or "-"
+            clean_custno = outlet_id
+            clean_custname = outlet.custname or outlet_id
+            clean_gp = outlet.grouppayer or "-"
+            clean_kec = outlet.kecamatan or "-"
+            clean_kel = outlet.kelurahan or "-"
+            clean_addr = outlet.alamat or "-"
+
+            if outlet.invoices:
+                for inv in outlet.invoices:
+                    invoice_rows.append({
+                        "No Recap": recap_no_str,
+                        "Plat Nomor": route.vehicle_id,
+                        "No Faktur": inv.invno,
+                        "Kode Outlet": clean_custno,
+                        "Nama Outlet": clean_custname,
+                        "Group Payer": clean_gp,
+                        "Kecamatan": clean_kec,
+                        "Kelurahan": clean_kel,
+                        "Alamat": clean_addr,
+                        "Urutan Stop (Sequence)": seq_idx,
+                        "Karton": getattr(inv, "total_karton", 0.0) or getattr(outlet, "total_karton", 0.0) or 0,
+                        "Kubikasi (M3)": round(inv.m3, 4),
+                        "Tonase (KG)": round(inv.kg, 4),
+                        "Total Neto": getattr(inv, "total_neto", 0.0) or getattr(outlet, "total_neto", 0.0) or 0,
+                        "Zone Outlet": out_zone,
+                        "Is Cross-Zone Swept": is_swept,
+                        "Is Zone Inferred": is_inferred,
+                    })
+            else:
+                invoice_rows.append({
+                    "No Recap": recap_no_str,
+                    "Plat Nomor": route.vehicle_id,
+                    "No Faktur": clean_custno,
+                    "Kode Outlet": clean_custno,
+                    "Nama Outlet": clean_custname,
+                    "Group Payer": clean_gp,
+                    "Kecamatan": clean_kec,
+                    "Kelurahan": clean_kel,
+                    "Alamat": clean_addr,
+                    "Urutan Stop (Sequence)": seq_idx,
+                    "Karton": getattr(outlet, "total_karton", 0.0) or 0,
+                    "Kubikasi (M3)": round(outlet.m3, 4),
+                    "Tonase (KG)": round(outlet.kg, 4),
+                    "Total Neto": getattr(outlet, "total_neto", 0.0) or 0,
+                    "Zone Outlet": out_zone,
+                    "Is Cross-Zone Swept": is_swept,
+                    "Is Zone Inferred": is_inferred,
+                })
+
+    df_invoice = pd.DataFrame(invoice_rows, columns=[
+        "No Recap", "Plat Nomor", "No Faktur", "Kode Outlet", "Nama Outlet",
+        "Group Payer", "Kecamatan", "Kelurahan", "Alamat", "Urutan Stop (Sequence)",
+        "Karton", "Kubikasi (M3)", "Tonase (KG)", "Total Neto", "Zone Outlet",
+        "Is Cross-Zone Swept", "Is Zone Inferred",
+    ])
+
+    # ── Sheet 3: Unassigned Detail ───────────────────────────────────────
+    max_fleet_m3 = max((v.max_m3 for v in request_payload.vehicles), default=0.0)
+    max_fleet_kg = max((v.max_kg for v in request_payload.vehicles), default=0.0)
+
+    pruned_set = pruned_outlet_ids or set()
+    unassigned_rows: list[dict] = []
+    for outlet_id in response_data.unassigned_outlets:
+        outlet = _get_outlet(outlet_id)
+        if outlet is None:
+            continue
+
+        if outlet_id in pruned_set:
+            pct = int(getattr(request_payload, "min_epe_threshold", 0.0) * 100)
+            reason = f"Pruned: Vehicle EPE < {pct}% (Pooled for Next Trip)"
+        elif max_fleet_m3 > 0 and outlet.m3 > max_fleet_m3:
+            reason = f"Capacity Exceeded (M3: {outlet.m3:.3f} > Fleet Max: {max_fleet_m3:.3f})"
+        elif max_fleet_kg > 0 and outlet.kg > max_fleet_kg:
+            reason = f"Capacity Exceeded (KG: {outlet.kg:.1f} > Fleet Max: {max_fleet_kg:.1f})"
+        elif outlet.allowed_vehicles or (outlet.jns_kend and outlet.jns_kend.upper() == "MOTOR"):
+            reason = f"Vehicle Restriction (Requires {outlet.jns_kend or outlet.allowed_vehicles})"
+        else:
+            reason = "Capacity Exceeded / Time Limit / Feasible cluster not reachable"
+
+        clean_custno = outlet_id
+        clean_custname = outlet.custname or outlet_id
+        clean_gp = outlet.grouppayer or "-"
+        clean_kec = outlet.kecamatan or "-"
+        clean_kel = outlet.kelurahan or "-"
+        out_zone = outlet.zone or "-"
+
+        if outlet.invoices:
+            for inv in outlet.invoices:
+                unassigned_rows.append({
+                    "No Faktur": inv.invno,
+                    "Kode Outlet": clean_custno,
+                    "Nama Outlet": clean_custname,
+                    "Group Payer": clean_gp,
+                    "Kecamatan": clean_kec,
+                    "Kelurahan": clean_kel,
+                    "Kubikasi (M3)": round(inv.m3, 4),
+                    "Tonase (KG)": round(inv.kg, 4),
+                    "Zone Outlet": out_zone,
+                    "Alasan Gagal Routing (Drop Reason / Capacity Exceeded / Vehicle Restriction / Time Limit)": reason,
+                })
+        else:
+            unassigned_rows.append({
+                "No Faktur": clean_custno,
+                "Kode Outlet": clean_custno,
+                "Nama Outlet": clean_custname,
+                "Group Payer": clean_gp,
+                "Kecamatan": clean_kec,
+                "Kelurahan": clean_kel,
+                "Kubikasi (M3)": round(outlet.m3, 4),
+                "Tonase (KG)": round(outlet.kg, 4),
+                "Zone Outlet": out_zone,
+                "Alasan Gagal Routing (Drop Reason / Capacity Exceeded / Vehicle Restriction / Time Limit)": reason,
+            })
+
+    df_unassigned = pd.DataFrame(unassigned_rows, columns=[
+        "No Faktur", "Kode Outlet", "Nama Outlet", "Group Payer", "Kecamatan", "Kelurahan",
+        "Kubikasi (M3)", "Tonase (KG)", "Zone Outlet",
+        "Alasan Gagal Routing (Drop Reason / Capacity Exceeded / Vehicle Restriction / Time Limit)",
+    ])
+
+    # ── Write to in-memory bytes ─────────────────────────────────────────
+    output_io = io.BytesIO()
+    with pd.ExcelWriter(output_io, engine="openpyxl") as writer:
+        df_fleet.to_excel(writer,      sheet_name="Fleet Summary",    index=False)
+        df_invoice.to_excel(writer,    sheet_name="Invoice Detail",   index=False)
+        df_unassigned.to_excel(writer, sheet_name="Unassigned Detail", index=False)
+
+        # Run metadata footer in Fleet Summary
+        ws = writer.sheets["Fleet Summary"]
+        meta_row = len(df_fleet) + 3
+        ws.cell(row=meta_row,     column=1, value="--- Run Metadata ---")
+        ws.cell(row=meta_row + 1, column=1, value="Algorithm")
+        ws.cell(row=meta_row + 1, column=2, value=getattr(request_payload, "algorithm", "ortools"))
+        ws.cell(row=meta_row + 2, column=1, value="Execution Time (sec)")
+        ws.cell(row=meta_row + 2, column=2, value=round(execution_time_seconds, 3))
+        ws.cell(row=meta_row + 3, column=1, value="Timestamp")
+        ws.cell(row=meta_row + 3, column=2, value=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        ws.cell(row=meta_row + 4, column=1, value="Total Vehicles Used")
+        ws.cell(row=meta_row + 4, column=2, value=len(df_fleet))
+        ws.cell(row=meta_row + 5, column=1, value="Total Outlets Served")
+        ws.cell(row=meta_row + 5, column=2, value=len(df_invoice["Kode Outlet"].unique()) if not df_invoice.empty else 0)
+        ws.cell(row=meta_row + 6, column=1, value="Unassigned Outlets")
+        ws.cell(row=meta_row + 6, column=2, value=len(response_data.unassigned_outlets))
+
+    excel_bytes = output_io.getvalue()
+    max_rit = max((_detect_ritase(r.vehicle_id) for r in response_data.assigned_routes), default=1)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"CVRP_Log_Run_{timestamp_str}_Ritase{max_rit}.xlsx"
+
+    return excel_bytes, filename
 
 
 def generate_routing_excel(
@@ -2118,225 +2440,69 @@ def generate_routing_excel(
     execution_time_seconds: float = 0.0,
     pruned_outlet_ids: set[str] | None = None,
     expansion_map: dict[str, list[OutletIn]] | None = None,
-) -> None:
+) -> tuple[str, str]:
     """
-    Generate a multi-sheet Excel (.xlsx) after each successful routing run.
-
-    Sheet 1 — "Fleet Summary"    : one row per assigned vehicle +
-                                   run metadata footer (algorithm, execution time, etc.).
-    Sheet 2 — "Invoice Detail"   : one row per invoice within each assigned route
-                                   (expands outlets that carry multiple invoices, correctly labels split deliveries & ritase).
-    Sheet 3 — "Unassigned Detail": one row per unassigned outlet with a REASON column
-                                   explaining why the solver dropped the node.
-
-    File is saved to ./logs/RoutingResult_{algorithm_name}_Ritase{max_rit}_{YYYYMMDD_HHMMSS}.xlsx.
-    Requires: pandas, openpyxl  (pip install pandas openpyxl)
+    Generate and save Excel dispatch summary log into ./logs/.
+    Returns (filename, filepath).
     """
     try:
-        vehicle_map: dict[str, VehicleIn] = {v.id: v for v in request_payload.vehicles}
-        outlet_map: dict[str, OutletIn]   = {o.id: o for o in request_payload.outlets}
-
-        if expansion_map:
-            for node_id, members in expansion_map.items():
-                for m in members:
-                    outlet_map[m.id] = m
-
-        def _detect_ritase(veh_id: str) -> int:
-            matches = re.findall(r"(?:Trip|Ritase)\s*(\d+)", veh_id, re.IGNORECASE)
-            if matches:
-                return max(int(x) for x in matches)
-            return 1
-
-        _SPLIT_REGEX = re.compile(r"\s*\(Split\s*\d+\)", re.IGNORECASE)
-
-        def _strip_split(text: str) -> str:
-            return _SPLIT_REGEX.sub("", text).strip()
-
-        def _get_outlet(oid: str) -> OutletIn | None:
-            if oid in outlet_map:
-                return outlet_map[oid]
-            split_m = re.match(r"^(.*)_SPLIT_(\d+)$", oid)
-            if split_m:
-                base_id, s_idx = split_m.group(1), split_m.group(2)
-                base_o = outlet_map.get(base_id)
-                if base_o:
-                    clean_name = _strip_split(base_o.custname or base_id)
-                    invs = []
-                    if base_o.invoices:
-                        for inv in base_o.invoices:
-                            clean_invno = _strip_split(inv.invno)
-                            invs.append(InvoiceIn(
-                                invno=f"{clean_invno} (Split {s_idx})",
-                                m3=inv.m3,
-                                kg=inv.kg,
-                            ))
-                    else:
-                        invs.append(InvoiceIn(
-                            invno=f"{base_id} (Split {s_idx})",
-                            m3=base_o.m3,
-                            kg=base_o.kg,
-                        ))
-                    return OutletIn(
-                        id=oid,
-                        lat=base_o.lat,
-                        lng=base_o.lng,
-                        m3=base_o.m3,
-                        kg=base_o.kg,
-                        custname=f"{clean_name} (Split {s_idx})",
-                        jns_kend=base_o.jns_kend,
-                        invoices=invs,
-                        allowed_vehicles=base_o.allowed_vehicles,
-                        grouppayer=base_o.grouppayer,
-                        zone=base_o.zone,
-                    )
-            return None
-
-        # ── Sheet 1: Fleet Summary ───────────────────────────────────────────
-        fleet_rows: list[dict] = []
-        for route in response_data.assigned_routes:
-            vehicle = vehicle_map.get(route.vehicle_id)
-            if vehicle is None:
-                continue
-            kub_pct = (route.total_m3 / vehicle.max_m3 * 100.0) if vehicle.max_m3 > 0 else 0.0
-            ton_pct = (route.total_kg / vehicle.max_kg * 100.0) if vehicle.max_kg > 0 else 0.0
-            fleet_rows.append({
-                "NOKEND":            route.vehicle_id,
-                "JENIS":             vehicle.jns_kend,
-                "OUTLET":            len(route.route),
-                "KUBIKASI":          round(route.total_m3, 4),
-                "STD KUBIK":         vehicle.max_m3,
-                "% KUBIK":           round(kub_pct, 2),
-                "TONASE":            round(route.total_kg, 4),
-                "STD TONASE":        vehicle.max_kg,
-                "% TONASE":          round(ton_pct, 2),
-                "% MAX EPE":         round(max(kub_pct, ton_pct), 2),
-                "JARAK (Km)":        round(route.total_distance_km, 2),
-                "WAKTU TEMPUH (Jam)": round(route.total_duration_s / 3600, 2),
-            })
-        df_fleet = pd.DataFrame(fleet_rows, columns=[
-            "NOKEND", "JENIS", "OUTLET",
-            "KUBIKASI", "STD KUBIK", "% KUBIK",
-            "TONASE", "STD TONASE", "% TONASE",
-            "% MAX EPE", "JARAK (Km)", "WAKTU TEMPUH (Jam)",
-        ])
-
-        # ── Sheet 2: Invoice Detail ──────────────────────────────────────────
-        invoice_rows: list[dict] = []
-        for route in response_data.assigned_routes:
-            vehicle  = vehicle_map.get(route.vehicle_id)
-            jns_kend = vehicle.jns_kend if vehicle else ""
-            ritase   = _detect_ritase(route.vehicle_id)
-
-            for outlet_id in route.route:
-                outlet = _get_outlet(outlet_id)
-                if outlet is None:
-                    continue
-
-                if outlet.invoices:
-                    # Outlet aggregates multiple invoices — expand each one
-                    for inv in outlet.invoices:
-                        invoice_rows.append({
-                            "NOKEND":   route.vehicle_id,
-                            "JNSKEND":  jns_kend,
-                            "RITASE":   ritase,
-                            "CUSTNO":   outlet_id,
-                            "CUSTNAME": outlet.custname,
-                            "INVNO":    inv.invno,
-                            "KUBIKASI": round(inv.m3, 4),
-                            "TONASE":   round(inv.kg, 4),
-                        })
-                else:
-                    # Single-invoice outlet (fallback)
-                    invoice_rows.append({
-                        "NOKEND":   route.vehicle_id,
-                        "JNSKEND":  jns_kend,
-                        "RITASE":   ritase,
-                        "CUSTNO":   outlet_id,
-                        "CUSTNAME": outlet.custname,
-                        "INVNO":    outlet_id,
-                        "KUBIKASI": round(outlet.m3, 4),
-                        "TONASE":   round(outlet.kg, 4),
-                    })
-
-        df_invoice = pd.DataFrame(invoice_rows, columns=[
-            "NOKEND", "JNSKEND", "RITASE",
-            "CUSTNO", "CUSTNAME", "INVNO",
-            "KUBIKASI", "TONASE",
-        ])
-
-        # ── Sheet 3: Unassigned Detail ───────────────────────────────────────
-        max_fleet_m3 = max((v.max_m3 for v in request_payload.vehicles), default=0.0)
-        max_fleet_kg = max((v.max_kg for v in request_payload.vehicles), default=0.0)
-
-        pruned_set = pruned_outlet_ids or set()
-        unassigned_rows: list[dict] = []
-        for outlet_id in response_data.unassigned_outlets:
-            outlet = _get_outlet(outlet_id)
-            if outlet is None:
-                continue
-            if outlet_id in pruned_set:
-                pct = int(request_payload.min_epe_threshold * 100)
-                reason = f"Pruned: Vehicle EPE < {pct}% (Pooled for Next Trip)"
-            elif outlet.m3 > max_fleet_m3 or outlet.kg > max_fleet_kg:
-                reason = "Exceeds Maximum Fleet Capacity"
-            else:
-                reason = "No feasible insertion found (Solver limitation)"
-            unassigned_rows.append({
-                "CUSTNO":   outlet_id,
-                "CUSTNAME": outlet.custname,
-                "INVNO":    outlet.invoices[0].invno if outlet.invoices else outlet_id,
-                "KUBIKASI": round(outlet.m3, 4),
-                "TONASE":   round(outlet.kg, 4),
-                "ALASAN":   reason,
-            })
-
-        df_unassigned = pd.DataFrame(unassigned_rows, columns=[
-            "CUSTNO", "CUSTNAME", "INVNO", "KUBIKASI", "TONASE", "ALASAN",
-        ])
-
-        # ── Save ────────────────────────────────────────────────────────────
         os.makedirs(_EXCEL_LOG_DIR, exist_ok=True)
-        max_rit = max((_detect_ritase(r.vehicle_id) for r in response_data.assigned_routes), default=1)
-        rit_suffix = f"_Ritase{max_rit}"
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename  = os.path.join(_EXCEL_LOG_DIR, f"RoutingResult_{algorithm_name}{rit_suffix}_{timestamp}.xlsx")
-
-        with pd.ExcelWriter(filename, engine="openpyxl") as writer:
-            df_fleet.to_excel(writer,      sheet_name="Fleet Summary",    index=False)
-            df_invoice.to_excel(writer,    sheet_name="Invoice Detail",   index=False)
-            df_unassigned.to_excel(writer, sheet_name="Unassigned Detail", index=False)
-
-            # ── Run metadata footer in Fleet Summary ─────────────────────
-            ws = writer.sheets["Fleet Summary"]
-            meta_row = len(df_fleet) + 3   # header(1) + data rows + blank row(1) → 1-based
-            ws.cell(row=meta_row,     column=1, value="--- Run Metadata ---")
-            ws.cell(row=meta_row + 1, column=1, value="Algorithm")
-            ws.cell(row=meta_row + 1, column=2, value=algorithm_name)
-            ws.cell(row=meta_row + 2, column=1, value="Execution Time (sec)")
-            ws.cell(row=meta_row + 2, column=2, value=round(execution_time_seconds, 3))
-            ws.cell(row=meta_row + 3, column=1, value="Timestamp")
-            ws.cell(row=meta_row + 3, column=2, value=timestamp)
-            ws.cell(row=meta_row + 4, column=1, value="Total Vehicles Used")
-            ws.cell(row=meta_row + 4, column=2, value=len(df_fleet))
-            ws.cell(row=meta_row + 5, column=1, value="Total Outlets")
-            ws.cell(row=meta_row + 5, column=2, value=len(request_payload.outlets))
-            ws.cell(row=meta_row + 6, column=1, value="Unassigned Outlets")
-            ws.cell(row=meta_row + 6, column=2, value=len(response_data.unassigned_outlets))
-            ws.cell(row=meta_row + 7, column=1, value="Max Stops Setting")
-            ws.cell(row=meta_row + 7, column=2, value=request_payload.max_stops)
-            ws.cell(row=meta_row + 8, column=1, value="Min EPE Setting")
-            ws.cell(
-                row=meta_row + 8,
-                column=2,
-                value=f"{int(request_payload.min_epe_threshold * 100)}%" if request_payload.min_epe_threshold > 0 else "None",
-            )
-            ws.cell(row=meta_row + 9, column=1, value="Low-EPE Routes Pruned")
-            ws.cell(row=meta_row + 9, column=2, value=response_data.pruned_routes_count)
-
-        log.info("Routing Excel saved → %s", filename)
-
-    except Exception as exc:                    # never crash the request
+        excel_bytes, filename = build_cvrp_excel_bytes(
+            request_payload=request_payload,
+            response_data=response_data,
+            execution_time_seconds=execution_time_seconds,
+            pruned_outlet_ids=pruned_outlet_ids,
+            expansion_map=expansion_map,
+        )
+        filepath = os.path.join(_EXCEL_LOG_DIR, filename)
+        with open(filepath, "wb") as f:
+            f.write(excel_bytes)
+        log.info("Routing Excel saved -> %s (%d bytes)", filepath, len(excel_bytes))
+        response_data.excel_filename = filename
+        response_data.download_url = f"/logs/{filename}"
+        return filename, filepath
+    except Exception as exc:
         log.warning("generate_routing_excel failed: %s", exc)
+        return "", ""
+
+
+def _finalize_recap_and_propagation(
+    assigned_routes: list[AssignedRouteOut],
+    outlets: list[OutletIn],
+    expansion_map: dict[str, list[OutletIn]] | None,
+    split_outlets: list[OutletIn] | None,
+    start_recap_no: int = 10000000,
+) -> None:
+    """
+    Assign sequential 8-digit recap number starting from start_recap_no to each
+    vehicle route with at least 1 assigned outlet, and propagate recap_no to all
+    its assigned outlets and invoices.
+    """
+    recap_idx = 0
+    outlet_lookup = {o.id: o for o in outlets}
+
+    for r in assigned_routes:
+        if r.route:
+            r.recap_no = str(start_recap_no + recap_idx)
+            recap_idx += 1
+            for oid in r.route:
+                if expansion_map and oid in expansion_map:
+                    for sub_o in expansion_map[oid]:
+                        sub_o.recap_no = r.recap_no
+                        for inv in sub_o.invoices:
+                            inv.recap_no = r.recap_no
+                elif oid in outlet_lookup:
+                    outlet_lookup[oid].recap_no = r.recap_no
+                    for inv in outlet_lookup[oid].invoices:
+                        inv.recap_no = r.recap_no
+
+    if split_outlets:
+        for so in split_outlets:
+            for r in assigned_routes:
+                if r.recap_no and so.id in r.route:
+                    so.recap_no = r.recap_no
+                    for inv in so.invoices:
+                        inv.recap_no = r.recap_no
 
 
 # ---------------------------------------------------------------------------
@@ -2428,6 +2594,15 @@ async def optimize(payload: OptimizeRequest):
                     t_solve = time.monotonic() - t_solve0
                     push_progress("SOLVE", 90, f"OR-Tools finished in {t_solve:.2f}s: {len(assigned_routes)} routes active{ritase_label}, {pruned_count} pruned, {len(unassigned)} unassigned")
 
+                    # Assign sequential 8-digit recap number and propagate to outlets/invoices
+                    _finalize_recap_and_propagation(
+                        assigned_routes=assigned_routes,
+                        outlets=outlets,
+                        expansion_map=expansion_map,
+                        split_outlets=split_outlets,
+                        start_recap_no=payload.start_recap_no,
+                    )
+
                     response = OptimizeResponse(
                         assigned_routes=assigned_routes,
                         unassigned_outlets=unassigned,
@@ -2513,6 +2688,15 @@ async def optimize(payload: OptimizeRequest):
 
     _execution_time = time.monotonic() - _t0
 
+    # Assign sequential 8-digit recap number and propagate to outlets/invoices
+    _finalize_recap_and_propagation(
+        assigned_routes=assigned_routes,
+        outlets=outlets,
+        expansion_map=expansion_map,
+        split_outlets=split_outlets,
+        start_recap_no=payload.start_recap_no,
+    )
+
     log.info(
         "Final [%s]: %d routes (%d pruned), %d unassigned (%.1fs)",
         mode_label, len(assigned_routes), pruned_count, len(unassigned), _execution_time,
@@ -2535,6 +2719,76 @@ async def optimize(payload: OptimizeRequest):
     )
 
     return response
+
+
+@app.post("/export-excel-log")
+async def export_excel_log(payload: ExportExcelLogRequest):
+    """
+    Export current optimization routes to a 3-sheet Excel log and stream file as download.
+    """
+    try:
+        excel_bytes, filename = build_cvrp_excel_bytes(
+            request_payload=payload,
+            response_data=payload,
+            execution_time_seconds=0.0,
+        )
+        # Also persist to ./logs/ for audit trail
+        os.makedirs(_EXCEL_LOG_DIR, exist_ok=True)
+        filepath = os.path.join(_EXCEL_LOG_DIR, filename)
+        with open(filepath, "wb") as f:
+            f.write(excel_bytes)
+
+        return StreamingResponse(
+            io.BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+    except Exception as exc:
+        log.exception("export_excel_log failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/logs/{filename}")
+async def get_excel_log(filename: str):
+    """
+    Download a previously generated Excel log from the ./logs/ directory.
+    """
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(_EXCEL_LOG_DIR, safe_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Excel log file not found")
+
+    return FileResponse(
+        filepath,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=safe_name,
+        headers={
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+@app.get("/logs")
+async def list_excel_logs():
+    """
+    List available Excel optimization logs in ./logs/.
+    """
+    os.makedirs(_EXCEL_LOG_DIR, exist_ok=True)
+    files = []
+    for fname in sorted(os.listdir(_EXCEL_LOG_DIR), reverse=True):
+        if fname.endswith(".xlsx"):
+            fpath = os.path.join(_EXCEL_LOG_DIR, fname)
+            stat = os.stat(fpath)
+            files.append({
+                "filename": fname,
+                "size_bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "download_url": f"/logs/{fname}",
+            })
+    return {"logs": files}
 
 
 # ---------------------------------------------------------------------------

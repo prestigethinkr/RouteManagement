@@ -29,6 +29,7 @@ function maxEpeColor(p: number): string {
 // Row type
 // ---------------------------------------------------------------------------
 interface SummaryRow {
+  recapNo: string;
   noKend: string;
   jenis: string;
   outlets: number;
@@ -47,6 +48,7 @@ function buildRows(routes: AssignedRoute[]): SummaryRow[] {
     const pctKubik = pct(r.currentM3, r.vehicle.KUBIKASE);
     const pctTonase = pct(r.currentKg, r.vehicle.TONASE);
     return {
+      recapNo: r.recap_no || "-",
       noKend: r.vehicle.NO_KEND,
       jenis: r.vehicle.JNS_KEND,
       outlets: r.outlets.length,
@@ -189,6 +191,7 @@ export default function FleetSummaryTable({
             <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200">
               <tr>
                 {[
+                  "NO REKAP",
                   "NOKEND",
                   "JENIS",
                   "OUTLET",
@@ -218,6 +221,10 @@ export default function FleetSummaryTable({
                     idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"
                   }`}
                 >
+                  {/* NO REKAP */}
+                  <td className="px-4 py-2 whitespace-nowrap font-mono text-[11px] font-bold text-amber-800">
+                    {row.recapNo !== "-" ? `#${row.recapNo}` : "-"}
+                  </td>
                   {/* NOKEND */}
                   <td className="px-4 py-2 whitespace-nowrap">
                     <span className="flex items-center gap-2">

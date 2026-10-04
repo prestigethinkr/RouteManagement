@@ -20,6 +20,8 @@ export interface RawInvoice {
   KECAMATAN?: string;
   KELURAHAN?: string;
   ALAMAT?: string;
+  recap_no?: string;
+  RECAP_NO?: string;
 }
 
 /** Aggregated outlet — grouped by CUSTNO from raw invoices */
@@ -42,6 +44,7 @@ export interface PendingOutlet {
   alamat?: string;
   is_cross_zone_swept?: boolean;
   is_zone_inferred?: boolean;
+  recap_no?: string;
 }
 
 /** A single vehicle from the fleet upload */
@@ -60,6 +63,18 @@ export interface GeoJsonLineString {
   coordinates: [number, number][]; // [lng, lat] pairs
 }
 
+/** Raw route object output from CVRP backend */
+export interface AssignedRouteOut {
+  vehicle_id: string;
+  total_m3: number;
+  total_kg: number;
+  route: string[];
+  total_duration_s?: number;
+  total_distance_km?: number;
+  cross_zone_swept_outlets?: string[];
+  recap_no?: string;
+}
+
 /** One vehicle's assigned route after the CVRP greedy algorithm */
 export interface AssignedRoute {
   vehicle: Vehicle;
@@ -70,6 +85,7 @@ export interface AssignedRoute {
   durationSeconds: number;           // total route duration in seconds (from backend)
   distanceKm: number;                // total route distance in km (from backend)
   color: string;
+  recap_no?: string;
 }
 
 /** Depot coordinates — hardcoded area */

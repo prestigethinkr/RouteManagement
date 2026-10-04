@@ -108,6 +108,7 @@ export default function FleetDispatchPage() {
   const [viewingAlgorithm, setViewingAlgorithm] = useState<"matrix" | "ortools">("matrix");
   const [ortoolsResult, setOrtoolsResult] = useState<{ routes: AssignedRoute[]; unassigned: PendingOutlet[] } | null>(null);
   const [matrixResult, setMatrixResult] = useState<{ routes: AssignedRoute[]; unassigned: PendingOutlet[] } | null>(null);
+  const [isDownloadingExcel, setIsDownloadingExcel] = useState(false);
 
   // --- Derived: active result for current view ---
   const activeResult = viewingAlgorithm === "matrix" ? matrixResult : ortoolsResult;
@@ -750,6 +751,7 @@ export default function FleetDispatchPage() {
         max_stops: maxStops > 0 ? maxStops : 40,
         use_matrix_constraints: useMatrix,
         min_epe_threshold: minEpeThreshold > 0 ? minEpeThreshold / 100 : 0.0,
+        start_recap_no: 10000000,
       };
 
       const optimizedData = await streamOptimization(payload, (stage, percent, logItem) => {
@@ -824,6 +826,12 @@ export default function FleetDispatchPage() {
             .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined)
             .map((o: PendingOutlet) => ({
               ...o,
+              recap_no: routeGroup.recap_no,
+              invoices: (o.invoices || []).map((inv: any) => ({
+                ...inv,
+                recap_no: routeGroup.recap_no,
+                RECAP_NO: routeGroup.recap_no,
+              })),
               is_cross_zone_swept: sweptIds.has(o.custno)
             }));
 
@@ -861,6 +869,7 @@ export default function FleetDispatchPage() {
             durationSeconds: routeGroup.total_duration_s ?? 0,
             distanceKm: routeGroup.total_distance_km ?? 0,
             color: ROUTE_COLORS[idx % ROUTE_COLORS.length],
+            recap_no: routeGroup.recap_no,
           } satisfies AssignedRoute;
         })
       );
@@ -1120,6 +1129,7 @@ export default function FleetDispatchPage() {
         max_stops: maxStops > 0 ? maxStops : 40,
         use_matrix_constraints: viewingAlgorithm === "matrix",
         min_epe_threshold: minEpeTrip23Threshold > 0 ? minEpeTrip23Threshold / 100 : 0.50,
+        start_recap_no: 10000000 + assignedRoutes.length,
       };
 
       const optimizedData = await streamOptimization(payload, (stage, percent, logItem) => {
@@ -1190,9 +1200,20 @@ export default function FleetDispatchPage() {
             KUBIKASE: routeGroup.total_m3,
             TONASE: routeGroup.total_kg,
           };
+          const sweptIds = new Set(routeGroup.cross_zone_swept_outlets || []);
           const orderedOutlets: PendingOutlet[] = routeGroup.route
             .map((id: string) => resolveOutlet(id, outletMap))
-            .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined);
+            .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined)
+            .map((o: PendingOutlet) => ({
+              ...o,
+              recap_no: routeGroup.recap_no,
+              invoices: (o.invoices || []).map((inv: any) => ({
+                ...inv,
+                recap_no: routeGroup.recap_no,
+                RECAP_NO: routeGroup.recap_no,
+              })),
+              is_cross_zone_swept: sweptIds.has(o.custno),
+            }));
 
           const rawCoords = [
             `${depotCoords.lng},${depotCoords.lat}`,
@@ -1228,6 +1249,7 @@ export default function FleetDispatchPage() {
             durationSeconds: routeGroup.total_duration_s ?? 0,
             distanceKm: routeGroup.total_distance_km ?? 0,
             color: ROUTE_COLORS[(colorOffset + idx) % ROUTE_COLORS.length],
+            recap_no: routeGroup.recap_no,
           } satisfies AssignedRoute;
         })
       );
@@ -1277,6 +1299,127 @@ export default function FleetDispatchPage() {
 
   // Backward compatibility alias
   const assignSecondTrip = assignNextTrip;
+
+  // ---------------------------------------------------------------------------
+  // Operational Excel Log Download Handler
+  // ---------------------------------------------------------------------------
+  async function handleDownloadExcelLog() {
+    if (assignedRoutes.length === 0) {
+      toast({
+        title: "No Routes to Export",
+        description: "Please run route optimization first before downloading logs.",
+      });
+      return;
+    }
+    setIsDownloadingExcel(true);
+    try {
+      // Gather all outlets currently in system
+      const allOutletsMap = new Map<string, PendingOutlet>();
+      for (const o of pendingOutlets) allOutletsMap.set(o.custno, o);
+      for (const r of assignedRoutes) {
+        for (const o of r.outlets) allOutletsMap.set(o.custno, o);
+      }
+      for (const o of unassignedOutlets) allOutletsMap.set(o.custno, o);
+
+      const allOutlets = Array.from(allOutletsMap.values());
+
+      const payload = {
+        depot: { lat: depotCoords.lat, lng: depotCoords.lng },
+        outlets: allOutlets.map((o) => ({
+          id: o.custno,
+          lat: o.lat,
+          lng: o.lng,
+          m3: o.total_kubikasi_m3,
+          kg: o.total_berat_kg,
+          custname: o.custname,
+          jns_kend: o.jns_kend,
+          invoices: o.invoices.map((inv) => ({
+            invno: inv.INVNO,
+            m3: inv.TOTAL_KUBIKASI_M3,
+            kg: inv.TOTAL_BERAT_KG,
+            total_karton: inv.TOTAL_KARTON || 0,
+            total_neto: inv.TOTAL_NETO || 0,
+            recap_no: inv.recap_no || inv.RECAP_NO,
+          })),
+          allowed_vehicles: o.allowed_vehicles,
+          grouppayer: o.grouppayer,
+          zone: o.zone,
+          is_zone_inferred: o.is_zone_inferred,
+          kecamatan: o.kecamatan,
+          kelurahan: o.kelurahan,
+          alamat: o.alamat,
+          total_karton: o.total_karton || 0,
+          total_neto: o.total_neto || 0,
+          recap_no: o.recap_no,
+        })),
+        vehicles: availableVehicles.map((v) => ({
+          id: v.NO_KEND,
+          max_m3: v.KUBIKASE,
+          max_kg: v.TONASE,
+          jns_kend: v.JNS_KEND,
+          zones: v.ZONES,
+          max_grouppayer: v.MAX_GROUPPAYER,
+        })),
+        assigned_routes: assignedRoutes.map((r) => ({
+          vehicle_id: r.vehicle.NO_KEND,
+          total_m3: r.currentM3,
+          total_kg: r.currentKg,
+          route: r.outlets.map((o) => o.custno),
+          total_duration_s: r.durationSeconds || 0,
+          total_distance_km: r.distanceKm || 0,
+          cross_zone_swept_outlets: r.outlets.filter((o) => o.is_cross_zone_swept).map((o) => o.custno),
+          recap_no: r.recap_no,
+        })),
+        unassigned_outlets: unassignedOutlets.map((o) => o.custno),
+        algorithm: viewingAlgorithm === "matrix" ? "ortools-matrix" : "ortools",
+        max_stops: maxStops > 0 ? maxStops : 40,
+        min_epe_threshold: minEpeThreshold > 0 ? minEpeThreshold / 100 : 0.0,
+      };
+
+      const res = await fetch(`${getCvrpApiBase()}/export-excel-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to export log: HTTP ${res.status}`);
+      }
+
+      let filename = `CVRP_Log_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const disposition = res.headers.get("content-disposition");
+      if (disposition && disposition.includes("filename=")) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          filename = match[1];
+        }
+      }
+
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      toast({
+        title: "Excel Log Downloaded",
+        description: `Saved as ${filename}`,
+      });
+    } catch (err: any) {
+      console.error("Download Excel log failed:", err);
+      toast({
+        variant: "destructive",
+        title: "Download Failed",
+        description: err?.message || "Failed to download Excel operational log.",
+      });
+    } finally {
+      setIsDownloadingExcel(false);
+    }
+  }
 
   // --- Derived values ---
   const bothLoaded = pendingOutlets.length > 0 && availableVehicles.length > 0;
@@ -1433,6 +1576,22 @@ export default function FleetDispatchPage() {
             >
               <BarChart2 className="h-3.5 w-3.5 text-blue-600" />
               <span>Utilization</span>
+            </Button>
+
+            {/* Download Operational Excel Log Button */}
+            <Button
+              variant="outline"
+              onClick={handleDownloadExcelLog}
+              disabled={isDownloadingExcel}
+              className="border-emerald-300 text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold shadow-2xs transition-colors"
+              title="Download Operational Excel Logs (Fleet Summary, Invoice Detail, Unassigned)"
+            >
+              {isDownloadingExcel ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
+              ) : (
+                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+              )}
+              <span>{isDownloadingExcel ? "Exporting…" : "Download Excel Log"}</span>
             </Button>
           </>
         )}
@@ -1723,10 +1882,15 @@ export default function FleetDispatchPage() {
                               className="flex-1 min-w-0"
                               onClick={() => toggleFleet(route.vehicle.NO_KEND)}
                             >
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-bold text-xs text-slate-900 truncate">
                                   {route.vehicle.NO_KEND}
                                 </span>
+                                {route.recap_no && (
+                                  <span className="px-1.5 py-0.2 rounded text-[9.5px] font-mono font-bold bg-amber-50 text-amber-800 border border-amber-300 shrink-0">
+                                    Rekap: #{route.recap_no}
+                                  </span>
+                                )}
                                 <span className="px-1.5 py-0.2 rounded text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
                                   {route.vehicle.JNS_KEND}
                                 </span>
