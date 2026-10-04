@@ -1,0 +1,69 @@
+name: Auto Deploy to VPS
+
+on:
+  push:
+    branches:
+      - deploy-netlify
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  deploy:
+    name: Deploy Backend & Frontend
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------
+      # 1. DEPLOY PYTHON CVRP SERVICE
+      # -------------------------------------------------------------
+      - name: Deploy Python Backend
+        run: |
+          echo ">>> [1/4] Updating CVRP backend files..."
+          cp cvrp_service.py /opt/cvrp-service/cvrp_service.py
+          cp requirements.txt /opt/cvrp-service/requirements.txt
+
+          echo ">>> [2/4] Installing backend dependencies..."
+          if [ -d "/opt/cvrp-service/venv" ]; then
+            /opt/cvrp-service/venv/bin/pip install -r /opt/cvrp-service/requirements.txt --quiet
+          fi
+
+          echo ">>> [3/4] Restarting CVRP systemd service..."
+          sudo systemctl restart cvrp
+
+          echo ">>> [4/4] Verifying backend status..."
+          sudo systemctl is-active --quiet cvrp && echo "✓ CVRP Service is RUNNING!" || (echo "✗ CVRP Service failed!" && exit 1)
+
+      # -------------------------------------------------------------
+      # 2. DEPLOY NEXT.JS FRONTEND
+      # -------------------------------------------------------------
+      - name: Deploy Next.js Frontend
+        run: |
+          echo ">>> [1/4] Syncing frontend files to /opt/cvrp-frontend..."
+          mkdir -p /opt/cvrp-frontend
+          
+          # Copy frontend files preserving existing .env.local on VPS
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -av --delete --exclude 'node_modules' --exclude '.next' --exclude '.env.local' frontend/ /opt/cvrp-frontend/
+          else
+            cp -r frontend/* /opt/cvrp-frontend/
+          fi
+
+          echo ">>> [2/4] Building Next.js production bundle..."
+          cd /opt/cvrp-frontend
+          npm install
+          npm run build
+
+          echo ">>> [3/4] Restarting cvrp-frontend service..."
+          sudo systemctl restart cvrp-frontend
+
+          echo ">>> [4/4] Verifying frontend status..."
+          sudo systemctl is-active --quiet cvrp-frontend && echo "✓ Frontend Service is RUNNING!" || (echo "✗ Frontend Service failed!" && exit 1)
+
+      - name: Success Notification
+        run: |
+          echo "=========================================================="
+          echo "✓ DEPLOYMENT FINISHED SUCCESSFULLY ON VPS!"
+          echo "  - Backend CVRP:  http://163.52.135.197:8000"
+          echo "  - Frontend App:  http://163.52.135.197:8001"
+          echo "=========================================================="
