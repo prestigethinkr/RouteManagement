@@ -2033,7 +2033,7 @@ def solve_cvrp_matrix(
             progress_cb(
                 "ZONE",
                 pct,
-                f"Menghitung rute untuk Zona {zone_name} ({zone_idx}/{total_phases}): {len(z_outlets)} toko, {len(z_vehicles)} armada ({len(z_dedicated)} khusus, {len(drafted_float_for_zone)} fleksibel)..."
+                f"Menghitung rute untuk distrik {zone_name} ({zone_idx}/{total_phases}): {len(z_outlets)} toko, {len(z_vehicles)} armada ({len(z_dedicated)} khusus, {len(drafted_float_for_zone)} fleksibel)..."
             )
 
         t_z0 = time.monotonic()

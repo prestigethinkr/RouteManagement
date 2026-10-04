@@ -635,7 +635,7 @@ export default function FleetDispatchPage() {
           if (parsed.assigned_routes) {
             optimizedData = parsed;
           }
-        } catch {}
+        } catch { }
       }
     };
 
@@ -774,7 +774,7 @@ export default function FleetDispatchPage() {
         time: new Date().toLocaleTimeString("it-IT"),
         stage: "INIT",
         percent: 5,
-        message: `Memulai perhitungan rute untuk ${pendingOutlets.length} toko dengan ${availableVehicles.length} armada (${selectedAlgorithm === "matrix" ? "Matrix ERP" : "Baseline"})...`,
+        message: `Memulai perhitungan rute untuk ${pendingOutlets.length} toko dengan ${availableVehicles.length} armada (${selectedAlgorithm === "matrix" ? "Matrix Constrain" : "Baseline"})...`,
         level: "INFO",
       },
     ]);
@@ -1331,8 +1331,8 @@ export default function FleetDispatchPage() {
       const newlyAssignedIds = new Set(optimizedData.assigned_routes.flatMap((r: any) => r.route));
       let remainingUnassigned: PendingOutlet[] = optimizedData.unassigned_outlets
         ? optimizedData.unassigned_outlets
-            .map((id: string) => resolveOutlet(id, outletMap))
-            .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined)
+          .map((id: string) => resolveOutlet(id, outletMap))
+          .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined)
         : unassignedOutlets.filter((o) => !newlyAssignedIds.has(o.custno));
 
       // Safeguard: Ensure newly assigned outlets are never included in remaining unassigned
@@ -1431,14 +1431,14 @@ export default function FleetDispatchPage() {
           ...availableVehicles,
           ...assignedRoutes.map((r) => r.vehicle)
         ].filter((v, i, a) => a.findIndex((t) => t.NO_KEND === v.NO_KEND) === i)
-        .map((v) => ({
-          id: v.NO_KEND,
-          max_m3: v.KUBIKASE,
-          max_kg: v.TONASE,
-          jns_kend: v.JNS_KEND,
-          zones: v.ZONES,
-          max_grouppayer: v.MAX_GROUPPAYER,
-        })),
+          .map((v) => ({
+            id: v.NO_KEND,
+            max_m3: v.KUBIKASE,
+            max_kg: v.TONASE,
+            jns_kend: v.JNS_KEND,
+            zones: v.ZONES,
+            max_grouppayer: v.MAX_GROUPPAYER,
+          })),
         assigned_routes: assignedRoutes.map((r) => ({
           vehicle_id: r.vehicle.NO_KEND,
           total_m3: r.currentM3,
@@ -1589,17 +1589,19 @@ export default function FleetDispatchPage() {
           <div className="relative w-full max-w-3xl bg-white rounded-3xl shadow-2xl border border-slate-200 p-8 flex flex-col items-center overflow-hidden animate-in fade-in zoom-in-95 duration-300">
             {/* Ambient subtle glow */}
             <div className="absolute w-[400px] h-[400px] bg-blue-100/50 rounded-full blur-3xl pointer-events-none -top-20" />
-            
+
             {/* Elemen Atas: ThinkingOrb */}
-            <div className="relative z-10 flex items-center justify-center mb-6">
-              <div className="absolute -inset-4 bg-blue-100/50 rounded-full blur-2xl animate-pulse" />
-              <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="light" />
+            <div className="relative z-10 flex items-center justify-center w-28 h-28 my-2">
+              <div className="absolute inset-0 bg-blue-100/60 rounded-full blur-2xl animate-pulse" />
+              <div className="scale-[1.65] transform-gpu">
+                <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="light" />
+              </div>
             </div>
 
             {/* Elemen Tengah: Teks Indikator Progres */}
             <div className="relative z-10 text-center max-w-lg mb-6 space-y-2">
               <h2 className="text-xl font-bold tracking-tight text-slate-800">
-                Mengalkulasi Rute Optimal
+                Proses Kalkulasi Rute
               </h2>
               <p className="text-xs sm:text-sm text-slate-500 font-medium">
                 {assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
@@ -1609,7 +1611,7 @@ export default function FleetDispatchPage() {
               <div className="pt-2 flex flex-col items-center gap-2">
                 <div className="w-72 sm:w-96 bg-slate-100 rounded-full h-2.5 overflow-hidden border border-slate-200 shadow-inner">
                   <div
-                    className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full transition-all duration-300 ease-out"
+                    className="bg-blue-600 h-full rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${Math.max(5, Math.min(100, solverProgress))}%` }}
                   />
                 </div>
@@ -1634,10 +1636,6 @@ export default function FleetDispatchPage() {
                     {solverLogs.length} pesan
                   </span>
                 </div>
-                <div className="flex items-center gap-2 text-[11px]">
-                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
-                  <span className="text-emerald-600 font-medium">Live Stream</span>
-                </div>
               </div>
 
               {/* Log Messages (Auto-scrolled) */}
@@ -1657,34 +1655,32 @@ export default function FleetDispatchPage() {
                     >
                       <span className="text-slate-400 shrink-0 text-[11px] select-none font-mono">[{log.time}]</span>
                       <span
-                        className={`text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 uppercase select-none ${
-                          log.stage === "INIT"
-                            ? "bg-blue-100 text-blue-700 border border-blue-200"
-                            : log.stage === "OSRM"
+                        className={`text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 uppercase select-none ${log.stage === "INIT"
+                          ? "bg-blue-100 text-blue-700 border border-blue-200"
+                          : log.stage === "OSRM"
                             ? "bg-cyan-100 text-cyan-700 border border-cyan-200"
                             : log.stage === "SETUP"
-                            ? "bg-purple-100 text-purple-700 border border-purple-200"
-                            : log.stage === "SOLVE" || log.stage === "SOLVER"
-                            ? "bg-emerald-100 text-emerald-700 border border-emerald-200"
-                            : log.stage === "DONE"
-                            ? "bg-green-100 text-green-700 border border-green-200"
-                            : log.stage === "ERROR"
-                            ? "bg-rose-100 text-rose-700 border border-rose-200"
-                            : "bg-slate-100 text-slate-700 border border-slate-200"
-                        }`}
+                              ? "bg-purple-100 text-purple-700 border border-purple-200"
+                              : log.stage === "SOLVE" || log.stage === "SOLVER"
+                                ? "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                                : log.stage === "DONE"
+                                  ? "bg-green-100 text-green-700 border border-green-200"
+                                  : log.stage === "ERROR"
+                                    ? "bg-rose-100 text-rose-700 border border-rose-200"
+                                    : "bg-slate-100 text-slate-700 border border-slate-200"
+                          }`}
                       >
                         {log.stage || "INFO"}
                       </span>
                       <span
-                        className={`flex-1 break-words ${
-                          log.level === "ERROR"
-                            ? "text-rose-600 font-semibold"
-                            : log.level === "WARN"
+                        className={`flex-1 break-words ${log.level === "ERROR"
+                          ? "text-rose-600 font-semibold"
+                          : log.level === "WARN"
                             ? "text-amber-600"
                             : log.stage === "DONE"
-                            ? "text-emerald-600 font-semibold"
-                            : "text-slate-600"
-                        }`}
+                              ? "text-emerald-600 font-semibold"
+                              : "text-slate-600"
+                          }`}
                       >
                         {formatOperationalLog(log.message)}
                       </span>
@@ -1700,146 +1696,143 @@ export default function FleetDispatchPage() {
       {/* ════════════ 2. FLOATING TOP-RIGHT ACTION DOCK ════════════ */}
       {!assigning && (
         <div className="absolute top-4 right-4 z-[1000] flex items-center gap-1.5 p-1.5 bg-white/90 backdrop-blur-md rounded-2xl border border-slate-200/80 shadow-md">
-        {!hasRoutes ? (
-          <>
-            {!isDataLoaded && bothLoaded && (
-              <Button
-                onClick={handleLoadData}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs h-8 px-3 rounded-xl shadow-xs font-semibold gap-1.5"
-              >
-                <Eye className="h-3.5 w-3.5" />
-                <span>Load Preview</span>
-              </Button>
-            )}
-
-            <Button
-              onClick={autoAssignRoutes}
-              disabled={assigning}
-              className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-8 px-3.5 rounded-xl shadow-sm shadow-blue-500/20 font-semibold gap-1.5"
-            >
-              {assigning ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Zap className="h-3.5 w-3.5" />
+          {!hasRoutes ? (
+            <>
+              {!isDataLoaded && bothLoaded && (
+                <Button
+                  onClick={handleLoadData}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs h-8 px-3 rounded-xl shadow-xs font-semibold gap-1.5"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>Load Preview</span>
+                </Button>
               )}
-              <span>{assigning ? "Optimizing…" : "Auto-Assign Fleet"}</span>
-            </Button>
 
-            {/* Download Excel Log (Visible but disabled before routing) */}
-            <Button
-              variant="outline"
-              disabled={true}
-              className="border-slate-200 text-slate-400 bg-slate-50/50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold cursor-not-allowed opacity-60"
-              title="Jalankan Auto-Assign Fleet terlebih dahulu untuk mengunduh log Excel"
-            >
-              <FileSpreadsheet className="h-3.5 w-3.5 text-slate-400" />
-              <span>Download Excel Log</span>
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button
-              onClick={autoAssignRoutes}
-              disabled={assigning}
-              variant="outline"
-              className="border-slate-200 text-slate-700 hover:bg-slate-50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold"
-              title="Run optimization again"
-            >
-              <RotateCcw className="h-3 w-3" />
-              <span>Re-Optimize</span>
-            </Button>
-
-            {unassignedOutlets.length > 0 && nextTripNumber <= 3 && (
               <Button
-                onClick={assignNextTrip}
+                onClick={autoAssignRoutes}
                 disabled={assigning}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-8 px-3 rounded-xl shadow-sm text-xs font-semibold gap-1.5"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-8 px-3.5 rounded-xl shadow-sm shadow-blue-500/20 font-semibold gap-1.5"
               >
-                <Sparkles className="h-3.5 w-3.5" />
-                <span>{`Assign ${nextTripNumber === 2 ? "2nd" : "3rd"} Trip`}</span>
+                {assigning ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Zap className="h-3.5 w-3.5" />
+                )}
+                <span>{assigning ? "Optimizing…" : "Auto-Assign Fleet"}</span>
               </Button>
-            )}
 
-            {/* Manual Route Editor Drawer Button */}
-            <Button
-              variant="outline"
-              onClick={() => handleOpenRouteEditor()}
-              className={`border-slate-200 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold transition-colors ${
-                isRouteEditorOpen
+              {/* Download Excel Log (Visible but disabled before routing) */}
+              <Button
+                variant="outline"
+                disabled={true}
+                className="border-slate-200 text-slate-400 bg-slate-50/50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold cursor-not-allowed opacity-60"
+                title="Jalankan Auto-Assign Fleet terlebih dahulu untuk mengunduh log Excel"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5 text-slate-400" />
+                <span>Download Excel Log</span>
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                onClick={autoAssignRoutes}
+                disabled={assigning}
+                variant="outline"
+                className="border-slate-200 text-slate-700 hover:bg-slate-50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold"
+                title="Run optimization again"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>Re-Optimize</span>
+              </Button>
+
+              {unassignedOutlets.length > 0 && nextTripNumber <= 3 && (
+                <Button
+                  onClick={assignNextTrip}
+                  disabled={assigning}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-8 px-3 rounded-xl shadow-sm text-xs font-semibold gap-1.5"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>{`Assign ${nextTripNumber === 2 ? "2nd" : "3rd"} Trip`}</span>
+                </Button>
+              )}
+
+              {/* Manual Route Editor Drawer Button */}
+              <Button
+                variant="outline"
+                onClick={() => handleOpenRouteEditor()}
+                className={`border-slate-200 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold transition-colors ${isRouteEditorOpen
                   ? "bg-blue-50 text-blue-700 border-blue-300 shadow-xs"
                   : "text-slate-700 hover:bg-slate-50"
-              }`}
-              title="Open Manual Route Editor (Transfer Invoices)"
-            >
-              <Sliders className="h-3.5 w-3.5 text-blue-600" />
-              <span>Route Editor</span>
-            </Button>
+                  }`}
+                title="Open Manual Route Editor (Transfer Invoices)"
+              >
+                <Sliders className="h-3.5 w-3.5 text-blue-600" />
+                <span>Route Editor</span>
+              </Button>
 
+              <Button
+                variant="outline"
+                onClick={() => setIsSummaryOpen(true)}
+                className="border-slate-200 text-slate-700 hover:bg-slate-50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold"
+                title="View Fleet Utilization Summary"
+              >
+                <BarChart2 className="h-3.5 w-3.5 text-blue-600" />
+                <span>Utilization</span>
+              </Button>
+
+              {/* Download Operational Excel Log Button */}
+              <Button
+                variant="outline"
+                onClick={handleDownloadExcelLog}
+                disabled={isDownloadingExcel}
+                className="border-emerald-300 text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold shadow-2xs transition-colors"
+                title="Download Operational Excel Logs (Fleet Summary, Invoice Detail, Unassigned)"
+              >
+                {isDownloadingExcel ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
+                ) : (
+                  <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                )}
+                <span>{isDownloadingExcel ? "Exporting…" : "Download Excel Log"}</span>
+              </Button>
+            </>
+          )}
+
+          {/* Solver Console Trigger in Floating Dock */}
+          {(solverLogs.length > 0 || assigning) && (
             <Button
               variant="outline"
-              onClick={() => setIsSummaryOpen(true)}
-              className="border-slate-200 text-slate-700 hover:bg-slate-50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold"
-              title="View Fleet Utilization Summary"
-            >
-              <BarChart2 className="h-3.5 w-3.5 text-blue-600" />
-              <span>Utilization</span>
-            </Button>
-
-            {/* Download Operational Excel Log Button */}
-            <Button
-              variant="outline"
-              onClick={handleDownloadExcelLog}
-              disabled={isDownloadingExcel}
-              className="border-emerald-300 text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold shadow-2xs transition-colors"
-              title="Download Operational Excel Logs (Fleet Summary, Invoice Detail, Unassigned)"
-            >
-              {isDownloadingExcel ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
-              ) : (
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-              )}
-              <span>{isDownloadingExcel ? "Exporting…" : "Download Excel Log"}</span>
-            </Button>
-          </>
-        )}
-
-        {/* Solver Console Trigger in Floating Dock */}
-        {(solverLogs.length > 0 || assigning) && (
-          <Button
-            variant="outline"
-            onClick={() => setIsLogConsoleOpen(!isLogConsoleOpen)}
-            className={`border-slate-200 text-xs h-8 px-2.5 rounded-xl gap-1.5 font-semibold transition-colors ${
-              isLogConsoleOpen
+              onClick={() => setIsLogConsoleOpen(!isLogConsoleOpen)}
+              className={`border-slate-200 text-xs h-8 px-2.5 rounded-xl gap-1.5 font-semibold transition-colors ${isLogConsoleOpen
                 ? "bg-blue-50 text-blue-700 border-blue-300"
                 : "text-slate-700 hover:bg-slate-50"
-            }`}
-            title={isLogConsoleOpen ? "Hide Solver Console" : "Open Solver Console"}
-          >
-            {assigning ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
-            ) : (
-              <Terminal className="h-3.5 w-3.5 text-emerald-600" />
-            )}
-            <span className="hidden sm:inline">Console</span>
-            <span className="font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
-              {solverProgress}%
-            </span>
-          </Button>
-        )}
+                }`}
+              title={isLogConsoleOpen ? "Hide Solver Console" : "Open Solver Console"}
+            >
+              {assigning ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+              ) : (
+                <Terminal className="h-3.5 w-3.5 text-emerald-600" />
+              )}
+              <span className="hidden sm:inline">Console</span>
+              <span className="font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
+                {solverProgress}%
+              </span>
+            </Button>
+          )}
 
-        {/* Settings Toggle */}
-        <Button
-          variant="outline"
-          onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-          className={`border-slate-200 text-xs h-8 px-2.5 rounded-xl gap-1.5 transition-colors font-semibold ${
-            isSettingsOpen ? "bg-slate-100 text-slate-900 border-slate-300" : "text-slate-600 hover:bg-slate-50"
-          }`}
-          title="Dispatch Settings & Files"
-        >
-          <Sliders className="h-3.5 w-3.5 text-slate-600" />
-          <span className="hidden sm:inline">Settings</span>
-        </Button>
-      </div>
+          {/* Settings Toggle */}
+          <Button
+            variant="outline"
+            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            className={`border-slate-200 text-xs h-8 px-2.5 rounded-xl gap-1.5 transition-colors font-semibold ${isSettingsOpen ? "bg-slate-100 text-slate-900 border-slate-300" : "text-slate-600 hover:bg-slate-50"
+              }`}
+            title="Dispatch Settings & Files"
+          >
+            <Sliders className="h-3.5 w-3.5 text-slate-600" />
+            <span className="hidden sm:inline">Settings</span>
+          </Button>
+        </div>
       )}
 
       {/* ════════════ 3. LEFT DISPATCH DESK (COLLAPSIBLE FLOATING WIDGET) ════════════ */}
@@ -1873,526 +1866,516 @@ export default function FleetDispatchPage() {
                       <h1 className="text-xs font-extrabold text-slate-900 tracking-tight truncate">
                         Route Dispatcher
                       </h1>
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.2 rounded-md border shrink-0 ${
-                        selectedAlgorithm === "matrix"
+                      <span
+                        className={`text-[9px] font-bold px-1.5 py-0.2 rounded-md border shrink-0 ${selectedAlgorithm === "matrix"
                           ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                           : "bg-blue-50 text-blue-700 border-blue-200"
-                      }`}
-                    >
-                      {selectedAlgorithm === "matrix" ? "Matrix ERP" : "Baseline"}
-                    </span>
+                          }`}
+                      >
+                        {selectedAlgorithm === "matrix" ? "Matrix ERP" : "Baseline"}
+                      </span>
+                    </div>
+                    <p className="text-[9.5px] text-slate-400 font-medium leading-none mt-0.5 truncate">
+                      Enterprise Fleet Management · Mayora TMS
+                    </p>
                   </div>
-                  <p className="text-[9.5px] text-slate-400 font-medium leading-none mt-0.5 truncate">
-                    Enterprise Fleet Management · Mayora TMS
-                  </p>
                 </div>
+                <button
+                  onClick={() => setIsLeftPanelOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors shrink-0"
+                  title="Collapse sidebar"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
               </div>
-              <button
-                onClick={() => setIsLeftPanelOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors shrink-0"
-                title="Collapse sidebar"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
+
+              {/* Status & Pipeline Badges Row */}
+              <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                {!bothLoaded ? (
+                  <span className="text-slate-400 text-[10px] flex items-center gap-1">
+                    <UploadCloud className="h-3 w-3 text-blue-500" />
+                    Upload invoices & fleet files in Settings
+                  </span>
+                ) : !hasRoutes ? (
+                  <>
+                    <span className="font-semibold text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
+                      {pendingOutlets.length} Outlets ({totalInvoices} Invoices)
+                    </span>
+                    <span className="font-semibold text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
+                      {availableVehicles.length} Vehicles
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md flex items-center gap-1">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      {assignedRoutes.length} Dispatched ({totalAssignedStops} stops)
+                    </span>
+                    {unassignedOutlets.length > 0 ? (
+                      <span className="font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md flex items-center gap-1">
+                        <AlertTriangle className="h-3 w-3 text-amber-600" />
+                        {unassignedOutlets.length} Unassigned
+                      </span>
+                    ) : (
+                      <span className="font-bold text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
+                        0 Unassigned
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
-            {/* Status & Pipeline Badges Row */}
-            <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
-              {!bothLoaded ? (
-                <span className="text-slate-400 text-[10px] flex items-center gap-1">
-                  <UploadCloud className="h-3 w-3 text-blue-500" />
-                  Upload invoices & fleet files in Settings
-                </span>
-              ) : !hasRoutes ? (
-                <>
-                  <span className="font-semibold text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
-                    {pendingOutlets.length} Outlets ({totalInvoices} Invoices)
-                  </span>
-                  <span className="font-semibold text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
-                    {availableVehicles.length} Vehicles
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    {assignedRoutes.length} Dispatched ({totalAssignedStops} stops)
-                  </span>
-                  {unassignedOutlets.length > 0 ? (
-                    <span className="font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md flex items-center gap-1">
-                      <AlertTriangle className="h-3 w-3 text-amber-600" />
-                      {unassignedOutlets.length} Unassigned
-                    </span>
-                  ) : (
-                    <span className="font-bold text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
-                      0 Unassigned
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* 2 Tabs: Assigned Fleet vs Unassigned Pool */}
-          <div className="px-3 pt-2.5 pb-2 bg-slate-50/60 border-b border-slate-100 shrink-0">
-            <div className="flex p-0.5 rounded-xl bg-slate-200/70 text-xs font-semibold">
-              <button
-                onClick={() => setLeftTab("assigned")}
-                className={`flex-1 py-1.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 text-xs ${
-                  leftTab === "assigned"
+            {/* 2 Tabs: Assigned Fleet vs Unassigned Pool */}
+            <div className="px-3 pt-2.5 pb-2 bg-slate-50/60 border-b border-slate-100 shrink-0">
+              <div className="flex p-0.5 rounded-xl bg-slate-200/70 text-xs font-semibold">
+                <button
+                  onClick={() => setLeftTab("assigned")}
+                  className={`flex-1 py-1.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 text-xs ${leftTab === "assigned"
                     ? "bg-white text-slate-900 shadow-xs font-bold"
                     : "text-slate-600 hover:text-slate-900 font-medium"
-                }`}
-              >
-                <span>Fleet</span>
-                <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] ${
-                    leftTab === "assigned"
+                    }`}
+                >
+                  <span>Fleet</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] ${leftTab === "assigned"
                       ? "bg-blue-50 text-blue-700 font-bold"
                       : "bg-slate-200 text-slate-600"
-                  }`}
-                >
-                  {assignedRoutes.length}
-                </span>
-              </button>
-              <button
-                onClick={() => setLeftTab("unassigned")}
-                className={`flex-1 py-1.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 text-xs ${
-                  leftTab === "unassigned"
+                      }`}
+                  >
+                    {assignedRoutes.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setLeftTab("unassigned")}
+                  className={`flex-1 py-1.5 rounded-lg transition-all text-center flex items-center justify-center gap-1.5 text-xs ${leftTab === "unassigned"
                     ? "bg-white text-amber-900 shadow-xs font-bold"
                     : "text-slate-600 hover:text-slate-900 font-medium"
-                }`}
-              >
-                <span>Unassigned</span>
-                <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] ${
-                    unassignedOutlets.length > 0
+                    }`}
+                >
+                  <span>Unassigned</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] ${unassignedOutlets.length > 0
                       ? "bg-amber-100 text-amber-800 font-bold"
                       : "bg-slate-200 text-slate-600"
-                  }`}
-                >
-                  {unassignedOutlets.length}
-                </span>
-              </button>
+                      }`}
+                  >
+                    {unassignedOutlets.length}
+                  </span>
+                </button>
+              </div>
             </div>
-          </div>
 
-          {/* TAB 1: Assigned Fleet List */}
-          {leftTab === "assigned" && (
-            <div className="flex-1 flex flex-col min-h-0">
-              {/* Controls bar: search + all/none & segmented control */}
-              <div className="p-3 pb-2 flex flex-col gap-2 shrink-0 border-b border-slate-100/80 bg-white">
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
+            {/* TAB 1: Assigned Fleet List */}
+            {leftTab === "assigned" && (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Controls bar: search + all/none & segmented control */}
+                <div className="p-3 pb-2 flex flex-col gap-2 shrink-0 border-b border-slate-100/80 bg-white">
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Search className="h-3 w-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        placeholder="Search fleet (plate, type)..."
+                        value={searchFleet}
+                        onChange={(e) => setSearchFleet(e.target.value)}
+                        className="w-full pl-7 pr-2.5 py-1 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white"
+                      />
+                    </div>
+                    {hasRoutes && (
+                      <div className="flex items-center gap-0.5 shrink-0 bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-semibold text-slate-600">
+                        <button
+                          onClick={showAllVehicles}
+                          className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
+                          title="Show all route lines on map"
+                        >
+                          All
+                        </button>
+                        <button
+                          onClick={hideAllVehicles}
+                          className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
+                          title="Hide all route lines on map"
+                        >
+                          None
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Algorithm comparison toggle (if both results exist) */}
+                  {hasAnyResult && (
+                    <div className="flex rounded-lg border border-slate-200 overflow-hidden text-[10px] font-semibold p-0.5 bg-slate-50">
+                      <button
+                        disabled={!matrixResult}
+                        onClick={() => matrixResult && switchView("matrix")}
+                        className={`flex-1 py-1 rounded-md transition-all text-center flex items-center justify-center gap-1 ${viewingAlgorithm === "matrix" && matrixResult
+                          ? "bg-white text-emerald-800 shadow-xs font-bold border border-emerald-200/50"
+                          : matrixResult
+                            ? "text-slate-600 hover:text-slate-900"
+                            : "text-slate-300 cursor-not-allowed"
+                          }`}
+                      >
+                        <span>Matrix ERP</span>
+                        {matrixResult && <span className="text-emerald-600 font-bold">✓</span>}
+                      </button>
+                      <button
+                        disabled={!ortoolsResult}
+                        onClick={() => ortoolsResult && switchView("ortools")}
+                        className={`flex-1 py-1 rounded-md transition-all text-center flex items-center justify-center gap-1 ${viewingAlgorithm === "ortools" && ortoolsResult
+                          ? "bg-white text-blue-800 shadow-xs font-bold border border-blue-200/50"
+                          : ortoolsResult
+                            ? "text-slate-600 hover:text-slate-900"
+                            : "text-slate-300 cursor-not-allowed"
+                          }`}
+                      >
+                        <span>Baseline</span>
+                        {ortoolsResult && <span className="text-blue-600 font-bold">✓</span>}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Vehicle Routes List */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-2.5 scrollbar-thin scrollbar-thumb-slate-200">
+                  {!hasRoutes ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400">
+                      <Truck className="mb-2 h-8 w-8 opacity-40 text-blue-500" />
+                      <p className="text-xs font-medium text-slate-600">No routes generated</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {isDataLoaded ? 'Click "Auto-Assign Fleet" in dock above' : "Upload files to start dispatch"}
+                      </p>
+                    </div>
+                  ) : (
+                    filteredRoutes.map((route, idx) => {
+                      const isExpanded = !!expandedFleets[route.vehicle.NO_KEND];
+                      const isVehicleVisible = visibleVehicles.includes(route.vehicle.NO_KEND);
+                      const volPct = route.vehicle.KUBIKASE > 0 ? (route.currentM3 / route.vehicle.KUBIKASE) * 100 : 0;
+                      const wtPct = route.vehicle.TONASE > 0 ? (route.currentKg / route.vehicle.TONASE) * 100 : 0;
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`rounded-xl border bg-white shadow-xs overflow-hidden transition-all ${isExpanded
+                            ? "border-blue-300 ring-1 ring-blue-200/50 shadow-sm"
+                            : "border-slate-200/90 hover:border-slate-300"
+                            }`}
+                        >
+                          {/* Compact Default Card Header */}
+                          <div className="p-2.5 cursor-pointer select-none">
+                            <div className="flex items-center gap-2">
+                              {/* Color index badge */}
+                              <span
+                                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white shadow-xs"
+                                style={{ background: route.color }}
+                              >
+                                {idx + 1}
+                              </span>
+
+                              {/* Plate No & Vehicle Type Pill */}
+                              <div
+                                className="flex-1 min-w-0"
+                                onClick={() => toggleFleet(route.vehicle.NO_KEND)}
+                              >
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-xs text-slate-900 truncate">
+                                    {route.vehicle.NO_KEND}
+                                  </span>
+                                  {route.recap_no && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9.5px] font-mono font-bold bg-amber-50 text-amber-800 border border-amber-300 shrink-0">
+                                      Rekap: #{route.recap_no}
+                                    </span>
+                                  )}
+                                  <span className="px-1.5 py-0.2 rounded text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+                                    {route.vehicle.JNS_KEND}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5 font-medium">
+                                  <span>{route.outlets.length} stops</span>
+                                  {(route.distanceKm > 0 || route.durationSeconds > 0) && (
+                                    <>
+                                      <span>·</span>
+                                      <span className="font-semibold text-blue-600">
+                                        {formatDistance(route.distanceKm)}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Actions: Route Editor, Map Toggle & Chevron */}
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-blue-50 text-slate-400 hover:text-blue-600"
+                                  title="Open in Manual Route Editor (Transfer List)"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenRouteEditor(route.vehicle.NO_KEND);
+                                  }}
+                                >
+                                  <Sliders className="h-3.5 w-3.5" />
+                                </button>
+
+                                <button
+                                  className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-slate-100"
+                                  style={{ color: isVehicleVisible ? route.color : "#94a3b8" }}
+                                  title={isVehicleVisible ? "Hide route line on map" : "Show route line on map"}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleVehicleVisibility(route.vehicle.NO_KEND);
+                                  }}
+                                >
+                                  {isVehicleVisible ? (
+                                    <Eye className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <EyeOff className="h-3.5 w-3.5" />
+                                  )}
+                                </button>
+
+                                <button
+                                  onClick={() => toggleFleet(route.vehicle.NO_KEND)}
+                                  className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                                  title={isExpanded ? "Collapse details" : "Expand details"}
+                                >
+                                  {isExpanded ? (
+                                    <ChevronUp className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Mini Progress Bars (Compact Default View) */}
+                            <div
+                              className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px]"
+                              onClick={() => toggleFleet(route.vehicle.NO_KEND)}
+                            >
+                              <div className="flex-1 flex items-center gap-1.5">
+                                <span className="text-slate-400 font-semibold text-[9px] uppercase">Vol</span>
+                                <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/60 shadow-inner">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-300 ${volPct > 100
+                                      ? "bg-rose-500 animate-pulse"
+                                      : volPct >= 80
+                                        ? "bg-emerald-500"
+                                        : volPct >= 50
+                                          ? "bg-amber-500"
+                                          : "bg-blue-500"
+                                      }`}
+                                    style={{ width: `${Math.min(100, volPct)}%` }}
+                                  />
+                                </div>
+                                <span className="font-mono text-[9px] font-bold text-slate-600 shrink-0">
+                                  {volPct.toFixed(0)}%
+                                </span>
+                              </div>
+
+                              <div className="flex-1 flex items-center gap-1.5">
+                                <span className="text-slate-400 font-semibold text-[9px] uppercase">Wt</span>
+                                <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/60 shadow-inner">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-300 ${wtPct > 100
+                                      ? "bg-rose-500 animate-pulse"
+                                      : wtPct >= 80
+                                        ? "bg-emerald-500"
+                                        : wtPct >= 50
+                                          ? "bg-amber-500"
+                                          : "bg-indigo-500"
+                                      }`}
+                                    style={{ width: `${Math.min(100, wtPct)}%` }}
+                                  />
+                                </div>
+                                <span className="font-mono text-[9px] font-bold text-slate-600 shrink-0">
+                                  {wtPct.toFixed(0)}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Collapsible Accordion Body: Detailed Numeric Breakdown & Outlet Stops */}
+                          {isExpanded && (
+                            <div className="border-t border-slate-100 bg-slate-50/50">
+                              {/* Detailed numeric volume & weight statistics */}
+                              <div className="p-2.5 bg-white border-b border-slate-100 space-y-1.5 text-[10.5px]">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-500 font-medium">Volume Payload</span>
+                                  <span className="font-mono font-bold text-slate-800">
+                                    {route.currentM3.toFixed(2)} / {route.vehicle.KUBIKASE} m³ ({volPct.toFixed(0)}%)
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-slate-500 font-medium">Weight Payload</span>
+                                  <span className="font-mono font-bold text-slate-800">
+                                    {route.currentKg.toFixed(0)} / {route.vehicle.TONASE} kg ({wtPct.toFixed(0)}%)
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Outlet Stops List */}
+                              <div className="p-2 space-y-1 max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200">
+                                {route.outlets.map((outlet, sIdx) => (
+                                  <div
+                                    key={sIdx}
+                                    className="group flex items-center gap-2 rounded-lg p-1.5 text-[10.5px] hover:bg-white hover:shadow-xs border border-transparent hover:border-slate-200 cursor-pointer transition-all"
+                                    onClick={() =>
+                                      setFocusedOutlet({ custno: outlet.custno, lat: outlet.lat, lng: outlet.lng })
+                                    }
+                                  >
+                                    <span
+                                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-bold text-white shadow-xs"
+                                      style={{ background: route.color }}
+                                    >
+                                      {sIdx + 1}
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                      <p className="truncate text-slate-800 font-semibold">{outlet.custname}</p>
+                                      <p className="text-slate-500 font-mono text-[9.5px]">
+                                        {outlet.total_kubikasi_m3.toFixed(2)} m³ · {outlet.total_berat_kg.toFixed(0)} kg
+                                      </p>
+                                    </div>
+
+                                    {/* Quick Action buttons on hover */}
+                                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity shrink-0">
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenMoveModal(outlet, route.vehicle);
+                                        }}
+                                        title="Reassign to another vehicle"
+                                        className="p-1 rounded-md hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-colors"
+                                      >
+                                        <ArrowRightLeft className="h-3 w-3" />
+                                      </button>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleUnassignOutlet(route.vehicle.NO_KEND, outlet.custno);
+                                        }}
+                                        title="Unassign outlet back to pool"
+                                        className="p-1 rounded-md hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors"
+                                      >
+                                        <MinusCircle className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Drawer Transfer Trigger inside expanded vehicle card */}
+                              <div className="p-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+                                <span className="text-[10px] text-slate-500 font-medium">
+                                  Manual Dual-List Reorder
+                                </span>
+                                <button
+                                  onClick={() => handleOpenRouteEditor(route.vehicle.NO_KEND)}
+                                  className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-[10.5px] font-bold border border-blue-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                                >
+                                  <Sliders className="h-3 w-3" />
+                                  <span>Transfer Invoices</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: Unassigned Outlets Pool */}
+            {leftTab === "unassigned" && (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Unassigned Summary Banner */}
+                <div className="p-3 pb-2 border-b border-slate-100 bg-amber-50/40 shrink-0">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                      <span>{unassignedOutlets.length} Pending Outlets</span>
+                    </div>
+                    {assignedRoutes.length > 0 && unassignedOutlets.length > 0 && nextTripNumber <= 3 && (
+                      <Button
+                        onClick={assignNextTrip}
+                        disabled={assigning}
+                        className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-semibold rounded-lg shadow-xs h-6"
+                      >
+                        {assigning ? "Computing…" : `Assign ${nextTripNumber === 2 ? "2nd" : "3rd"} Trip`}
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="relative">
                     <Search className="h-3 w-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
                       type="text"
-                      placeholder="Search fleet (plate, type)..."
-                      value={searchFleet}
-                      onChange={(e) => setSearchFleet(e.target.value)}
-                      className="w-full pl-7 pr-2.5 py-1 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white"
+                      placeholder="Search pending outlet..."
+                      value={searchUnassigned}
+                      onChange={(e) => setSearchUnassigned(e.target.value)}
+                      className="w-full pl-7 pr-2.5 py-1 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-amber-500"
                     />
                   </div>
-                  {hasRoutes && (
-                    <div className="flex items-center gap-0.5 shrink-0 bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-semibold text-slate-600">
-                      <button
-                        onClick={showAllVehicles}
-                        className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
-                        title="Show all route lines on map"
-                      >
-                        All
-                      </button>
-                      <button
-                        onClick={hideAllVehicles}
-                        className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
-                        title="Hide all route lines on map"
-                      >
-                        None
-                      </button>
-                    </div>
-                  )}
                 </div>
 
-                {/* Algorithm comparison toggle (if both results exist) */}
-                {hasAnyResult && (
-                  <div className="flex rounded-lg border border-slate-200 overflow-hidden text-[10px] font-semibold p-0.5 bg-slate-50">
-                    <button
-                      disabled={!matrixResult}
-                      onClick={() => matrixResult && switchView("matrix")}
-                      className={`flex-1 py-1 rounded-md transition-all text-center flex items-center justify-center gap-1 ${
-                        viewingAlgorithm === "matrix" && matrixResult
-                          ? "bg-white text-emerald-800 shadow-xs font-bold border border-emerald-200/50"
-                          : matrixResult
-                          ? "text-slate-600 hover:text-slate-900"
-                          : "text-slate-300 cursor-not-allowed"
-                      }`}
-                    >
-                      <span>Matrix ERP</span>
-                      {matrixResult && <span className="text-emerald-600 font-bold">✓</span>}
-                    </button>
-                    <button
-                      disabled={!ortoolsResult}
-                      onClick={() => ortoolsResult && switchView("ortools")}
-                      className={`flex-1 py-1 rounded-md transition-all text-center flex items-center justify-center gap-1 ${
-                        viewingAlgorithm === "ortools" && ortoolsResult
-                          ? "bg-white text-blue-800 shadow-xs font-bold border border-blue-200/50"
-                          : ortoolsResult
-                          ? "text-slate-600 hover:text-slate-900"
-                          : "text-slate-300 cursor-not-allowed"
-                      }`}
-                    >
-                      <span>Baseline</span>
-                      {ortoolsResult && <span className="text-blue-600 font-bold">✓</span>}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Vehicle Routes List */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-2.5 scrollbar-thin scrollbar-thumb-slate-200">
-                {!hasRoutes ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400">
-                    <Truck className="mb-2 h-8 w-8 opacity-40 text-blue-500" />
-                    <p className="text-xs font-medium text-slate-600">No routes generated</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      {isDataLoaded ? 'Click "Auto-Assign Fleet" in dock above' : "Upload files to start dispatch"}
-                    </p>
-                  </div>
-                ) : (
-                  filteredRoutes.map((route, idx) => {
-                    const isExpanded = !!expandedFleets[route.vehicle.NO_KEND];
-                    const isVehicleVisible = visibleVehicles.includes(route.vehicle.NO_KEND);
-                    const volPct = route.vehicle.KUBIKASE > 0 ? (route.currentM3 / route.vehicle.KUBIKASE) * 100 : 0;
-                    const wtPct = route.vehicle.TONASE > 0 ? (route.currentKg / route.vehicle.TONASE) * 100 : 0;
-
-                    return (
+                {/* Unassigned items list */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-1.5 scrollbar-thin scrollbar-thumb-slate-200">
+                  {unassignedOutlets.length === 0 ? (
+                    <div className="py-12 flex flex-col items-center justify-center text-center text-slate-400">
+                      <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2 opacity-80" />
+                      <p className="text-xs font-bold text-slate-700">All outlets dispatched!</p>
+                      <p className="text-[11px] text-slate-400">0 unassigned outlets remaining</p>
+                    </div>
+                  ) : (
+                    filteredUnassigned.map((o, i) => (
                       <div
-                        key={idx}
-                        className={`rounded-xl border bg-white shadow-xs overflow-hidden transition-all ${
-                          isExpanded
-                            ? "border-blue-300 ring-1 ring-blue-200/50 shadow-sm"
-                            : "border-slate-200/90 hover:border-slate-300"
-                        }`}
+                        key={i}
+                        onMouseEnter={() => setFocusedUnassignedOutlet(o)}
+                        onMouseLeave={() => setFocusedUnassignedOutlet(null)}
+                        onClick={() => {
+                          setFocusedOutlet({ custno: o.custno, lat: o.lat, lng: o.lng });
+                          setFocusedUnassignedOutlet(o);
+                        }}
+                        className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white border border-slate-200 text-[11px] shadow-xs hover:border-amber-300 transition-colors cursor-pointer"
                       >
-                        {/* Compact Default Card Header */}
-                        <div className="p-2.5 cursor-pointer select-none">
-                          <div className="flex items-center gap-2">
-                            {/* Color index badge */}
-                            <span
-                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white shadow-xs"
-                              style={{ background: route.color }}
-                            >
-                              {idx + 1}
-                            </span>
-
-                            {/* Plate No & Vehicle Type Pill */}
-                            <div
-                              className="flex-1 min-w-0"
-                              onClick={() => toggleFleet(route.vehicle.NO_KEND)}
-                            >
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-bold text-xs text-slate-900 truncate">
-                                  {route.vehicle.NO_KEND}
-                                </span>
-                                {route.recap_no && (
-                                  <span className="px-1.5 py-0.2 rounded text-[9.5px] font-mono font-bold bg-amber-50 text-amber-800 border border-amber-300 shrink-0">
-                                    Rekap: #{route.recap_no}
-                                  </span>
-                                )}
-                                <span className="px-1.5 py-0.2 rounded text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
-                                  {route.vehicle.JNS_KEND}
-                                </span>
-                              </div>
-                              <div className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5 font-medium">
-                                <span>{route.outlets.length} stops</span>
-                                {(route.distanceKm > 0 || route.durationSeconds > 0) && (
-                                  <>
-                                    <span>·</span>
-                                    <span className="font-semibold text-blue-600">
-                                      {formatDistance(route.distanceKm)}
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Actions: Route Editor, Map Toggle & Chevron */}
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-blue-50 text-slate-400 hover:text-blue-600"
-                                title="Open in Manual Route Editor (Transfer List)"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenRouteEditor(route.vehicle.NO_KEND);
-                                }}
-                              >
-                                <Sliders className="h-3.5 w-3.5" />
-                              </button>
-
-                              <button
-                                className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-slate-100"
-                                style={{ color: isVehicleVisible ? route.color : "#94a3b8" }}
-                                title={isVehicleVisible ? "Hide route line on map" : "Show route line on map"}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleVehicleVisibility(route.vehicle.NO_KEND);
-                                }}
-                              >
-                                {isVehicleVisible ? (
-                                  <Eye className="h-3.5 w-3.5" />
-                                ) : (
-                                  <EyeOff className="h-3.5 w-3.5" />
-                                )}
-                              </button>
-
-                              <button
-                                onClick={() => toggleFleet(route.vehicle.NO_KEND)}
-                                className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
-                                title={isExpanded ? "Collapse details" : "Expand details"}
-                              >
-                                {isExpanded ? (
-                                  <ChevronUp className="h-3.5 w-3.5" />
-                                ) : (
-                                  <ChevronDown className="h-3.5 w-3.5" />
-                                )}
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Mini Progress Bars (Compact Default View) */}
-                          <div
-                            className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px]"
-                            onClick={() => toggleFleet(route.vehicle.NO_KEND)}
-                          >
-                            <div className="flex-1 flex items-center gap-1.5">
-                              <span className="text-slate-400 font-semibold text-[9px] uppercase">Vol</span>
-                              <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/60 shadow-inner">
-                                <div
-                                  className={`h-full rounded-full transition-all duration-300 ${
-                                    volPct > 100
-                                      ? "bg-rose-500 animate-pulse"
-                                      : volPct >= 80
-                                      ? "bg-emerald-500"
-                                      : volPct >= 50
-                                      ? "bg-amber-500"
-                                      : "bg-blue-500"
-                                  }`}
-                                  style={{ width: `${Math.min(100, volPct)}%` }}
-                                />
-                              </div>
-                              <span className="font-mono text-[9px] font-bold text-slate-600 shrink-0">
-                                {volPct.toFixed(0)}%
-                              </span>
-                            </div>
-
-                            <div className="flex-1 flex items-center gap-1.5">
-                              <span className="text-slate-400 font-semibold text-[9px] uppercase">Wt</span>
-                              <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/60 shadow-inner">
-                                <div
-                                  className={`h-full rounded-full transition-all duration-300 ${
-                                    wtPct > 100
-                                      ? "bg-rose-500 animate-pulse"
-                                      : wtPct >= 80
-                                      ? "bg-emerald-500"
-                                      : wtPct >= 50
-                                      ? "bg-amber-500"
-                                      : "bg-indigo-500"
-                                  }`}
-                                  style={{ width: `${Math.min(100, wtPct)}%` }}
-                                />
-                              </div>
-                              <span className="font-mono text-[9px] font-bold text-slate-600 shrink-0">
-                                {wtPct.toFixed(0)}%
-                              </span>
-                            </div>
-                          </div>
+                        <div className="min-w-0 flex-1 truncate">
+                          <p className="truncate text-slate-900 font-bold">{o.custname}</p>
+                          <p className="text-[10px] text-slate-500 font-mono">
+                            {o.total_kubikasi_m3.toFixed(2)} m³ · {o.total_berat_kg.toFixed(0)} kg {o.zone ? `· ${o.zone}` : ""}
+                          </p>
                         </div>
-
-                        {/* Collapsible Accordion Body: Detailed Numeric Breakdown & Outlet Stops */}
-                        {isExpanded && (
-                          <div className="border-t border-slate-100 bg-slate-50/50">
-                            {/* Detailed numeric volume & weight statistics */}
-                            <div className="p-2.5 bg-white border-b border-slate-100 space-y-1.5 text-[10.5px]">
-                              <div className="flex items-center justify-between">
-                                <span className="text-slate-500 font-medium">Volume Payload</span>
-                                <span className="font-mono font-bold text-slate-800">
-                                  {route.currentM3.toFixed(2)} / {route.vehicle.KUBIKASE} m³ ({volPct.toFixed(0)}%)
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between">
-                                <span className="text-slate-500 font-medium">Weight Payload</span>
-                                <span className="font-mono font-bold text-slate-800">
-                                  {route.currentKg.toFixed(0)} / {route.vehicle.TONASE} kg ({wtPct.toFixed(0)}%)
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Outlet Stops List */}
-                            <div className="p-2 space-y-1 max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200">
-                              {route.outlets.map((outlet, sIdx) => (
-                                <div
-                                  key={sIdx}
-                                  className="group flex items-center gap-2 rounded-lg p-1.5 text-[10.5px] hover:bg-white hover:shadow-xs border border-transparent hover:border-slate-200 cursor-pointer transition-all"
-                                  onClick={() =>
-                                    setFocusedOutlet({ custno: outlet.custno, lat: outlet.lat, lng: outlet.lng })
-                                  }
-                                >
-                                  <span
-                                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-bold text-white shadow-xs"
-                                    style={{ background: route.color }}
-                                  >
-                                    {sIdx + 1}
-                                  </span>
-                                  <div className="min-w-0 flex-1">
-                                    <p className="truncate text-slate-800 font-semibold">{outlet.custname}</p>
-                                    <p className="text-slate-500 font-mono text-[9.5px]">
-                                      {outlet.total_kubikasi_m3.toFixed(2)} m³ · {outlet.total_berat_kg.toFixed(0)} kg
-                                    </p>
-                                  </div>
-
-                                  {/* Quick Action buttons on hover */}
-                                  <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity shrink-0">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleOpenMoveModal(outlet, route.vehicle);
-                                      }}
-                                      title="Reassign to another vehicle"
-                                      className="p-1 rounded-md hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-colors"
-                                    >
-                                      <ArrowRightLeft className="h-3 w-3" />
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleUnassignOutlet(route.vehicle.NO_KEND, outlet.custno);
-                                      }}
-                                      title="Unassign outlet back to pool"
-                                      className="p-1 rounded-md hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors"
-                                    >
-                                      <MinusCircle className="h-3 w-3" />
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-
-                            {/* Drawer Transfer Trigger inside expanded vehicle card */}
-                            <div className="p-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-                              <span className="text-[10px] text-slate-500 font-medium">
-                                Manual Dual-List Reorder
-                              </span>
-                              <button
-                                onClick={() => handleOpenRouteEditor(route.vehicle.NO_KEND)}
-                                className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-[10.5px] font-bold border border-blue-200 flex items-center gap-1.5 transition-colors cursor-pointer"
-                              >
-                                <Sliders className="h-3 w-3" />
-                                <span>Transfer Invoices</span>
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenRouteEditor();
+                              setFocusedUnassignedOutlet(o);
+                            }}
+                            title="Open in Transfer Editor Drawer"
+                            className="p-1 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-colors"
+                          >
+                            <Sliders className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenMoveModal(o, null);
+                            }}
+                            title="Assign to active vehicle"
+                            className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white text-[10px] font-bold border border-blue-200 flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <PlusCircle className="h-3 w-3" />
+                            Assign
+                          </button>
+                        </div>
                       </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: Unassigned Outlets Pool */}
-          {leftTab === "unassigned" && (
-            <div className="flex-1 flex flex-col min-h-0">
-              {/* Unassigned Summary Banner */}
-              <div className="p-3 pb-2 border-b border-slate-100 bg-amber-50/40 shrink-0">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
-                    <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                    <span>{unassignedOutlets.length} Pending Outlets</span>
-                  </div>
-                  {assignedRoutes.length > 0 && unassignedOutlets.length > 0 && nextTripNumber <= 3 && (
-                    <Button
-                      onClick={assignNextTrip}
-                      disabled={assigning}
-                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-semibold rounded-lg shadow-xs h-6"
-                    >
-                      {assigning ? "Computing…" : `Assign ${nextTripNumber === 2 ? "2nd" : "3rd"} Trip`}
-                    </Button>
+                    ))
                   )}
                 </div>
-
-                <div className="relative">
-                  <Search className="h-3 w-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search pending outlet..."
-                    value={searchUnassigned}
-                    onChange={(e) => setSearchUnassigned(e.target.value)}
-                    className="w-full pl-7 pr-2.5 py-1 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-amber-500"
-                  />
-                </div>
               </div>
-
-              {/* Unassigned items list */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-1.5 scrollbar-thin scrollbar-thumb-slate-200">
-                {unassignedOutlets.length === 0 ? (
-                  <div className="py-12 flex flex-col items-center justify-center text-center text-slate-400">
-                    <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2 opacity-80" />
-                    <p className="text-xs font-bold text-slate-700">All outlets dispatched!</p>
-                    <p className="text-[11px] text-slate-400">0 unassigned outlets remaining</p>
-                  </div>
-                ) : (
-                  filteredUnassigned.map((o, i) => (
-                    <div
-                      key={i}
-                      onMouseEnter={() => setFocusedUnassignedOutlet(o)}
-                      onMouseLeave={() => setFocusedUnassignedOutlet(null)}
-                      onClick={() => {
-                        setFocusedOutlet({ custno: o.custno, lat: o.lat, lng: o.lng });
-                        setFocusedUnassignedOutlet(o);
-                      }}
-                      className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white border border-slate-200 text-[11px] shadow-xs hover:border-amber-300 transition-colors cursor-pointer"
-                    >
-                      <div className="min-w-0 flex-1 truncate">
-                        <p className="truncate text-slate-900 font-bold">{o.custname}</p>
-                        <p className="text-[10px] text-slate-500 font-mono">
-                          {o.total_kubikasi_m3.toFixed(2)} m³ · {o.total_berat_kg.toFixed(0)} kg {o.zone ? `· ${o.zone}` : ""}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenRouteEditor();
-                            setFocusedUnassignedOutlet(o);
-                          }}
-                          title="Open in Transfer Editor Drawer"
-                          className="p-1 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-colors"
-                        >
-                          <Sliders className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenMoveModal(o, null);
-                          }}
-                          title="Assign to active vehicle"
-                          className="px-2 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white text-[10px] font-bold border border-blue-200 flex items-center gap-1 transition-colors cursor-pointer"
-                        >
-                          <PlusCircle className="h-3 w-3" />
-                          Assign
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )
-    )}
+            )}
+          </div>
+        )
+      )}
 
       {/* ════════════ 4. RIGHT SETTINGS & UPLOADS WIDGET (COLLAPSIBLE FLOATING) ════════════ */}
       {isSettingsOpen && !assigning && (
@@ -2420,11 +2403,10 @@ export default function FleetDispatchPage() {
             <input ref={invoiceInputRef} type="file" accept=".csv,.txt,.tsv,.xls,.xlsx" className="hidden" onChange={handleInvoiceFile} />
             <button
               onClick={() => invoiceInputRef.current?.click()}
-              className={`flex w-full items-center gap-2.5 rounded-xl border-2 border-dashed p-2.5 text-left transition-all cursor-pointer ${
-                pendingOutlets.length > 0
-                  ? "border-blue-300 bg-blue-50/50"
-                  : "border-slate-200 hover:border-blue-400 hover:bg-slate-50"
-              }`}
+              className={`flex w-full items-center gap-2.5 rounded-xl border-2 border-dashed p-2.5 text-left transition-all cursor-pointer ${pendingOutlets.length > 0
+                ? "border-blue-300 bg-blue-50/50"
+                : "border-slate-200 hover:border-blue-400 hover:bg-slate-50"
+                }`}
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
                 <FileSpreadsheet className="h-4 w-4" />
@@ -2445,11 +2427,10 @@ export default function FleetDispatchPage() {
             <input ref={vehicleInputRef} type="file" accept=".csv,.txt,.tsv,.xls,.xlsx" className="hidden" onChange={handleVehicleFile} />
             <button
               onClick={() => vehicleInputRef.current?.click()}
-              className={`flex w-full items-center gap-2.5 rounded-xl border-2 border-dashed p-2.5 text-left transition-all cursor-pointer ${
-                availableVehicles.length > 0
-                  ? "border-emerald-300 bg-emerald-50/50"
-                  : "border-slate-200 hover:border-emerald-400 hover:bg-slate-50"
-              }`}
+              className={`flex w-full items-center gap-2.5 rounded-xl border-2 border-dashed p-2.5 text-left transition-all cursor-pointer ${availableVehicles.length > 0
+                ? "border-emerald-300 bg-emerald-50/50"
+                : "border-slate-200 hover:border-emerald-400 hover:bg-slate-50"
+                }`}
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
                 <Truck className="h-4 w-4" />
@@ -2482,7 +2463,7 @@ export default function FleetDispatchPage() {
                   setDepotLngStr(String(DEPOT_COORDS.lng));
                   try {
                     localStorage.setItem("cvrp_depot_coords", JSON.stringify(DEPOT_COORDS));
-                  } catch {}
+                  } catch { }
                 }}
                 className="text-[10px] font-semibold text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
                 title="Reset to default depot coordinates"
@@ -2507,7 +2488,7 @@ export default function FleetDispatchPage() {
                         const updated = { ...prev, lat: parsed };
                         try {
                           localStorage.setItem("cvrp_depot_coords", JSON.stringify(updated));
-                        } catch {}
+                        } catch { }
                         return updated;
                       });
                     }
@@ -2537,7 +2518,7 @@ export default function FleetDispatchPage() {
                         const updated = { ...prev, lng: parsed };
                         try {
                           localStorage.setItem("cvrp_depot_coords", JSON.stringify(updated));
-                        } catch {}
+                        } catch { }
                         return updated;
                       });
                     }
@@ -2565,11 +2546,10 @@ export default function FleetDispatchPage() {
                 ⚙️ Operational Rules
               </span>
               <span
-                className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full ${
-                  selectedAlgorithm === "matrix"
-                    ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                    : "bg-slate-100 text-slate-600"
-                }`}
+                className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full ${selectedAlgorithm === "matrix"
+                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                  : "bg-slate-100 text-slate-600"
+                  }`}
               >
                 {selectedAlgorithm === "matrix" ? "Matrix ERP ON" : "Baseline OFF"}
               </span>
@@ -2578,22 +2558,20 @@ export default function FleetDispatchPage() {
             <div className="flex rounded-xl border border-slate-200 overflow-hidden text-xs font-semibold p-0.5 bg-slate-100">
               <button
                 type="button"
-                className={`flex-1 py-1 rounded-lg transition-all text-center ${
-                  selectedAlgorithm === "matrix"
-                    ? "bg-white text-emerald-800 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
+                className={`flex-1 py-1 rounded-lg transition-all text-center ${selectedAlgorithm === "matrix"
+                  ? "bg-white text-emerald-800 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+                  }`}
                 onClick={() => setSelectedAlgorithm("matrix")}
               >
                 Matrix ERP
               </button>
               <button
                 type="button"
-                className={`flex-1 py-1 rounded-lg transition-all text-center ${
-                  selectedAlgorithm === "ortools"
-                    ? "bg-white text-blue-800 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
+                className={`flex-1 py-1 rounded-lg transition-all text-center ${selectedAlgorithm === "ortools"
+                  ? "bg-white text-blue-800 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+                  }`}
                 onClick={() => setSelectedAlgorithm("ortools")}
               >
                 Baseline
@@ -2610,15 +2588,14 @@ export default function FleetDispatchPage() {
           <div className="space-y-2 py-2 border-t border-slate-100">
             <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
               <span>Batas Waktu Operasional</span>
-              <span className={`px-2 py-0.5 rounded text-[9px] ${
-                useTimeLimit
-                  ? "bg-emerald-100 text-emerald-700"
-                  : "bg-slate-100 text-slate-500"
-              }`}>
+              <span className={`px-2 py-0.5 rounded text-[9px] ${useTimeLimit
+                ? "bg-emerald-100 text-emerald-700"
+                : "bg-slate-100 text-slate-500"
+                }`}>
                 {useTimeLimit ? "8 JAM (ON)" : "UNLIMITED (OFF)"}
               </span>
             </div>
-            
+
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-600 font-medium">Aktifkan Batas Waktu</span>
               <button
@@ -2626,15 +2603,13 @@ export default function FleetDispatchPage() {
                 role="switch"
                 aria-checked={useTimeLimit}
                 onClick={() => setUseTimeLimit(!useTimeLimit)}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white ${
-                  useTimeLimit ? 'bg-blue-600' : 'bg-slate-200'
-                }`}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white ${useTimeLimit ? 'bg-blue-600' : 'bg-slate-200'
+                  }`}
               >
                 <span className="sr-only">Aktifkan Batas Waktu</span>
                 <span
-                  className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-lg ring-0 transition-transform ${
-                    useTimeLimit ? 'translate-x-4' : 'translate-x-0'
-                  }`}
+                  className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-lg ring-0 transition-transform ${useTimeLimit ? 'translate-x-4' : 'translate-x-0'
+                    }`}
                 />
               </button>
             </div>
