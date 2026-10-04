@@ -634,7 +634,7 @@ def solve_cvrp(
     routing.AddAtSolutionCallback(at_solution_cb)
 
     if progress_cb:
-        progress_cb("SOLVER", 50, f"Starting Guided Local Search (GLS): {n_nodes} nodes, {n_vehicles} vehicles, limit={dyn_limit}...")
+        progress_cb("SOLVER", 50, f"Mencari kombinasi rute terbaik: {n_nodes} titik, {n_vehicles} armada...")
 
     # ── solve ─────────────────────────────────────────────────────────
     log.info(
@@ -648,7 +648,7 @@ def solve_cvrp(
         return [], [o.id for o in outlets], 0, set()
 
     if progress_cb:
-        progress_cb("SOLVER", 86, f"OR-Tools GLS completed in {round(time.monotonic() - t_start, 1)}s. Extracting routes...")
+        progress_cb("SOLVER", 86, f"Pencarian rute selesai dalam {round(time.monotonic() - t_start, 1)} detik. Menyusun hasil rute...")
 
     # ── extract routes ────────────────────────────────────────────────
     assigned_routes: list[AssignedRouteOut] = []
@@ -1921,12 +1921,12 @@ def solve_cvrp_matrix(
         progress_cb(
             "MATRIX",
             41,
-            f"Master Data: {orig_mapped} mapped, {inferred_cnt} inferred to zones, {unknown_cnt} ZONE_UNKNOWN | Fleet: {dedicated_count} dedicated, {float_count} float"
+            f"Data Master: {orig_mapped} terdaftar di zona, {inferred_cnt} disesuaikan ke zona, {unknown_cnt} luar zona | Armada: {dedicated_count} khusus zona, {float_count} fleksibel"
         )
 
     # ── Step 1: Preprocessing & GroupPayer / SDVRP consolidation ───────
     if progress_cb:
-        progress_cb("MATRIX", 42, f"GroupPayer: Preprocessing {len(outlets)} outlets...")
+        progress_cb("MATRIX", 42, f"Pengelompokan Faktur: Memeriksa {len(outlets)} toko...")
     fleet_max_m3 = max((v.max_m3 for v in vehicles), default=18.0)
     fleet_max_kg = max((v.max_kg for v in vehicles), default=6500.0)
     # Master fleet capacity floor: Never shred orders below standard heavy truck capacity (14 m3 / 6000 kg)
@@ -1934,7 +1934,7 @@ def solve_cvrp_matrix(
     max_fleet_kg = max(fleet_max_kg, 6000.0)
     merged_outlets, expansion_map, split_outlets = _preprocess_grouppayer(outlets, max_fleet_m3, max_fleet_kg)
     if progress_cb:
-        progress_cb("MATRIX", 45, f"GroupPayer: Consolidated into {len(merged_outlets)} atomic units ({len(expansion_map)} multi-outlet groups)")
+        progress_cb("MATRIX", 45, f"Menggabungkan faktur untuk toko yang sama menjadi {len(merged_outlets)} titik kunjungan ({len(expansion_map)} toko gabungan)")
 
     original_id_to_idx: dict[str, int] = {o.id: i + 1 for i, o in enumerate(outlets)}
 
@@ -2011,7 +2011,7 @@ def solve_cvrp_matrix(
             all_unassigned_outlets.extend(o.id for o in z_outlets)
             if progress_cb:
                 pct = 45 + int((zone_idx / total_phases) * 40)
-                progress_cb("ZONE", pct, f"Zone {zone_name} ({zone_idx}/{total_phases}): No vehicles -> {len(z_outlets)} outlets queued for Sweeper")
+                progress_cb("ZONE", pct, f"Zona {zone_name} ({zone_idx}/{total_phases}): Tidak ada armada langsung -> {len(z_outlets)} toko dialihkan ke pencarian armada lain")
             continue
 
         # Slicing duration and distance submatrices
@@ -2033,7 +2033,7 @@ def solve_cvrp_matrix(
             progress_cb(
                 "ZONE",
                 pct,
-                f"Solving Zone {zone_name} ({zone_idx}/{total_phases}): {len(z_outlets)} outlets, {len(z_vehicles)} vehicles ({len(z_dedicated)} dedicated, {len(drafted_float_for_zone)} float)..."
+                f"Menghitung rute untuk Zona {zone_name} ({zone_idx}/{total_phases}): {len(z_outlets)} toko, {len(z_vehicles)} armada ({len(z_dedicated)} khusus, {len(drafted_float_for_zone)} fleksibel)..."
             )
 
         t_z0 = time.monotonic()
@@ -2070,7 +2070,7 @@ def solve_cvrp_matrix(
         )
         if progress_cb:
             pct = 45 + int((zone_idx / total_phases) * 40)
-            progress_cb("ZONE", pct, f"Zone {zone_name} completed in {t_z:.1f}s: {len(z_assigned)} routes (avg {avg_z_epe:.1f}% EPE), {len(z_unassigned)} unassigned")
+            progress_cb("ZONE", pct, f"Zona {zone_name} selesai dalam {t_z:.1f} detik: {len(z_assigned)} rute terbentuk (rata-rata muatan {avg_z_epe:.1f}%), {len(z_unassigned)} toko belum teralokasi")
 
         all_assigned_routes.extend(z_assigned)
         all_unassigned_outlets.extend(z_unassigned)
@@ -2087,7 +2087,7 @@ def solve_cvrp_matrix(
             )
             if progress_cb:
                 pct = 45 + int(((unknown_idx - 1) / total_phases) * 40)
-                progress_cb("ZONE", pct, f"Solving ZONE_UNKNOWN ({unknown_idx}/{total_phases}): {len(unknown_outlets)} orphan outlets with {len(u_vehicles)} float vehicles...")
+                progress_cb("ZONE", pct, f"Menghitung rute toko luar zona ({unknown_idx}/{total_phases}): {len(unknown_outlets)} toko dengan {len(u_vehicles)} armada fleksibel...")
 
             u_matrix_indices = [0]
             for mo in unknown_outlets:
@@ -2124,7 +2124,7 @@ def solve_cvrp_matrix(
             )
             if progress_cb:
                 pct = 45 + int((unknown_idx / total_phases) * 40)
-                progress_cb("ZONE", pct, f"ZONE_UNKNOWN completed in {t_u:.1f}s: {len(u_assigned)} routes, {len(u_unassigned)} unassigned")
+                progress_cb("ZONE", pct, f"Toko luar zona selesai dalam {t_u:.1f} detik: {len(u_assigned)} rute terbentuk, {len(u_unassigned)} toko belum teralokasi")
             all_assigned_routes.extend(u_assigned)
             all_unassigned_outlets.extend(u_unassigned)
         else:
@@ -2135,11 +2135,11 @@ def solve_cvrp_matrix(
             all_unassigned_outlets.extend(o.id for o in unknown_outlets)
             if progress_cb:
                 pct = 45 + int((unknown_idx / total_phases) * 40)
-                progress_cb("ZONE", pct, f"ZONE_UNKNOWN: No float vehicles available -> {len(unknown_outlets)} outlets queued for Sweeper")
+                progress_cb("ZONE", pct, f"Toko luar zona: Tidak ada armada fleksibel -> {len(unknown_outlets)} toko dialihkan ke pencarian armada lain")
 
     # ── Tier 3 / Phase C1: Enforce All-or-Nothing Splits (Yanker) ────────
     if progress_cb:
-        progress_cb("YANKER", 85, f"Scanning for orphaned invoice splits to yank...")
+        progress_cb("YANKER", 85, f"Memeriksa konsistensi faktur split...")
     all_assigned_routes, all_unassigned_outlets, yanked_roots = _enforce_all_or_nothing_splits(
         assigned_routes=all_assigned_routes,
         unassigned_ids=all_unassigned_outlets,
@@ -2148,7 +2148,7 @@ def solve_cvrp_matrix(
 
     # ── Tier 3 / Phase C2: Phase 2 Post-Processing Cross-District Sweeper ─
     if progress_cb:
-        progress_cb("SWEEPER", 86, f"Running Cross-District Sweeper on {len(all_unassigned_outlets)} unassigned outlets...")
+        progress_cb("SWEEPER", 86, f"Mencari armada yang masih muat untuk {len(all_unassigned_outlets)} toko tersisa...")
     
     # We must prevent Sweeper from picking up yanked invoice parts
     blocked_sweeper_ids = set()
@@ -2204,7 +2204,7 @@ def solve_cvrp_matrix(
 
     # ── Step 5: Auto-TSP Polisher on expanded routes ────────────────
     if progress_cb:
-        progress_cb("POLISH", 89, f"Auto-TSP Polisher: Re-sequencing {len(all_assigned_routes)} routes into natural loops...")
+        progress_cb("POLISH", 89, f"Merapikan urutan perhentian {len(all_assigned_routes)} rute agar searah dan efisien...")
     all_assigned_routes = _polish_assigned_routes(
         assigned_routes=all_assigned_routes,
         outlets=outlets,
@@ -2217,7 +2217,7 @@ def solve_cvrp_matrix(
         progress_cb(
             "PRUNE",
             90,
-            f"Pipeline complete: {len(all_assigned_routes)} routes active, {pruned_count} routes dissolved",
+            f"Pemeriksaan efisiensi muatan: {len(all_assigned_routes)} rute aktif, {pruned_count} rute kurang muatan dilepas",
         )
 
     # ── Prepare Drop Reasons ──────────────────────────────────────────
@@ -2702,17 +2702,17 @@ async def optimize(payload: OptimizeRequest):
                         effective_min_epe = 0.50
                     payload.min_epe_threshold = effective_min_epe
 
-                    push_progress("INIT", 5, f"Validating payload: {len(outlets)} outlets, {len(vehicles)} vehicles{ritase_label} (mode={mode_label})")
+                    push_progress("INIT", 5, f"Memvalidasi data: {len(outlets)} toko, {len(vehicles)} armada{ritase_label}...")
 
                     # Phase 1: Fetch OSRM matrix
-                    push_progress("OSRM", 15, f"Fetching global {len(outlets)+1}x{len(outlets)+1} duration & distance matrix from OSRM...")
+                    push_progress("OSRM", 15, f"Mengambil data jarak jalan raya dari server ({len(outlets)+1} titik lokasi)...")
                     t_osrm0 = time.monotonic()
                     durations, distances = await fetch_duration_matrix(depot, outlets)
                     t_osrm = time.monotonic() - t_osrm0
-                    push_progress("OSRM", 35, f"OSRM table matrix loaded successfully in {t_osrm:.2f}s ({len(durations)}x{len(durations[0])} nodes)")
+                    push_progress("OSRM", 35, f"Data jarak berhasil dimuat dalam {t_osrm:.2f} detik ({len(durations)} titik)...")
 
                     # Phase 2: Solve CVRP
-                    push_progress("SETUP", 40, f"Initializing OR-Tools CVRP model{ritase_label} (max_stops={payload.max_stops}, min_epe={int(effective_min_epe*100)}%)...")
+                    push_progress("SETUP", 40, f"Menyiapkan parameter rute{ritase_label} (Maks {payload.max_stops} toko/truk, Min muatan {int(effective_min_epe*100)}%)...")
                     t_solve0 = time.monotonic()
 
                     if use_matrix:
@@ -2734,7 +2734,7 @@ async def optimize(payload: OptimizeRequest):
                     unassigned.extend(dummy_so_ids)
 
                     t_solve = time.monotonic() - t_solve0
-                    push_progress("SOLVE", 90, f"OR-Tools finished in {t_solve:.2f}s: {len(assigned_routes)} routes active{ritase_label}, {pruned_count} pruned, {len(unassigned)} unassigned")
+                    push_progress("SOLVE", 90, f"Perhitungan selesai dalam {t_solve:.2f} detik: {len(assigned_routes)} rute aktif{ritase_label}, {pruned_count} rute dilepas, {len(unassigned)} toko belum teralokasi")
 
                     # Assign sequential 8-digit recap number and propagate to outlets/invoices
                     _finalize_recap_and_propagation(
@@ -2752,7 +2752,7 @@ async def optimize(payload: OptimizeRequest):
                         split_outlets=split_outlets,
                     )
 
-                    push_progress("EXCEL", 96, "Generating Excel dispatch summary and audit logs...")
+                    push_progress("EXCEL", 96, "Menyusun ringkasan rute dan log audit Excel...")
                     generate_routing_excel(
                         algorithm_name=_ALGO_DISPLAY.get(mode_label, mode_label).replace("-", ""),
                         request_payload=payload,
@@ -2761,7 +2761,7 @@ async def optimize(payload: OptimizeRequest):
                         pruned_outlet_ids=pruned_ids,
                         expansion_map=expansion_map,
                     )
-                    push_progress("DONE", 100, f"Optimization completed successfully{ritase_label}! Total backend time: {time.monotonic() - _t0:.2f}s")
+                    push_progress("DONE", 100, f"Perhitungan rute selesai{ritase_label}! Total waktu pemrosesan: {time.monotonic() - _t0:.2f} detik")
 
                     loop.call_soon_threadsafe(
                         queue.put_nowait,

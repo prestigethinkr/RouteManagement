@@ -1,7 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useRef, useState, useMemo } from "react";
+import { useRef, useState, useMemo, useEffect } from "react";
+import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import type { PendingOutlet, Vehicle, AssignedRoute, GeoJsonLineString } from "@/lib/types";
 import { DEPOT_COORDS, ROUTE_COLORS } from "@/lib/types";
 import { parseInvoiceFile, parseVehicleFile } from "@/lib/parse-files";
@@ -67,6 +68,56 @@ function formatDuration(seconds: number): string {
 function formatDistance(km: number): string {
   if (!km) return "0 km";
   return km.toFixed(1) + " km";
+}
+
+function getOrbState(stage: string): OrbState {
+  switch (stage?.toUpperCase()) {
+    case "OSRM":
+      return "searching";
+    case "MATRIX":
+    case "SETUP":
+      return "weaving";
+    case "SOLVE":
+    case "SOLVER":
+      return "solving";
+    case "POLISH":
+      return "shaping";
+    case "DONE":
+      return "breathing";
+    default:
+      return "connecting";
+  }
+}
+
+function formatOperationalLog(message: string): string {
+  if (!message) return "";
+  let msg = message;
+  // Clean up any remaining "AI" jargon
+  msg = msg.replace(/\bAI\s+/gi, "");
+
+  // Operational Indonesian translations
+  msg = msg.replace(/Starting optimization for (\d+) outlets with (\d+) vehicles/i, "Memulai perhitungan rute untuk $1 toko dengan $2 armada");
+  msg = msg.replace(/Starting Trip (\d+) optimization for (\d+) pending outlets/i, "Memulai perhitungan rute Ritase $1 untuk $2 toko tersisa");
+  msg = msg.replace(/Fetching global.*?duration & distance matrix from OSRM/i, "Mengambil data jarak jalan raya dari server");
+  msg = msg.replace(/OSRM table matrix loaded successfully in ([\d\.]+)s/i, "Data jarak berhasil dimuat dalam $1 detik");
+  msg = msg.replace(/GroupPayer: Preprocessing (\d+) outlets/i, "Pengelompokan Faktur: Memeriksa $1 toko");
+  msg = msg.replace(/GroupPayer: Consolidated into (\d+) atomic units \((\d+) multi-outlet groups\)/i, "Menggabungkan faktur untuk toko yang sama menjadi $1 titik ($2 toko gabungan)");
+  msg = msg.replace(/GroupPayer: Consolidated into (\d+) atomic units/i, "Menggabungkan faktur untuk toko yang sama menjadi $1 titik");
+  msg = msg.replace(/Solving Zone (GROUP \d+|\S+)/i, "Menghitung rute untuk Zona $1");
+  msg = msg.replace(/Zone (\S+) completed in ([\d\.]+)s: (\d+) routes.*?(\d+) unassigned/i, "Zona $1 selesai dalam $2 detik: $3 rute terbentuk, $4 belum teralokasi");
+  msg = msg.replace(/Auto-TSP Polisher: Re-sequencing (\d+) routes into natural loops/i, "Merapikan urutan perhentian $1 rute agar searah dan efisien");
+  msg = msg.replace(/Auto-TSP Polisher: Improved (\d+)\/(\d+) routes, saving (\d+)s/i, "Urutan perhentian berhasil dioptimalkan: $1/$2 rute dipersingkat (hemat $3 detik)");
+  msg = msg.replace(/Scanning for orphaned invoice splits to yank/i, "Memeriksa konsistensi faktur split");
+  msg = msg.replace(/Running Cross-District Sweeper on (\d+) unassigned outlets/i, "Mencari armada yang masih muat untuk $1 toko tersisa");
+  msg = msg.replace(/Trip (\d+) Route Pruning: Removed (\d+) underutilized routes/i, "Pemeriksaan efisiensi muatan Ritase $1: Melepas $2 rute kurang muatan");
+  msg = msg.replace(/Generating Excel dispatch summary and audit logs/i, "Menyusun ringkasan rute dan file Excel");
+  msg = msg.replace(/Optimization completed successfully/i, "Perhitungan rute selesai!");
+  msg = msg.replace(/Validating payload: (\d+) outlets, (\d+) vehicles/i, "Memvalidasi data: $1 toko, $2 armada");
+  msg = msg.replace(/Initializing OR-Tools CVRP model/i, "Menyiapkan parameter rute");
+  msg = msg.replace(/No vehicles -> (\d+) outlets queued for Sweeper/i, "Tidak ada armada langsung -> $1 toko dialihkan ke pencarian armada lain");
+  msg = msg.replace(/Solving global CVRP:.*?/i, "Menghitung seluruh rute pengiriman...");
+  msg = msg.replace(/OR-Tools finished in ([\d\.]+)s: (\d+) routes active.*?(\d+) pruned.*?(\d+) unassigned/i, "Perhitungan selesai dalam $1 detik: $2 rute aktif, $3 rute dilepas, $4 belum teralokasi");
+  return msg;
 }
 
 function getCvrpApiBase(): string {
@@ -188,6 +239,14 @@ export default function FleetDispatchPage() {
   const [solverStage, setSolverStage] = useState("");
   const [isLogConsoleOpen, setIsLogConsoleOpen] = useState(false);
   const [isLogConsoleMinimized, setIsLogConsoleMinimized] = useState(false);
+
+  // --- Centralized Processing Log Container Ref & Auto-scroll ---
+  const centralLogContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (assigning && centralLogContainerRef.current) {
+      centralLogContainerRef.current.scrollTop = centralLogContainerRef.current.scrollHeight;
+    }
+  }, [solverLogs, assigning]);
 
   // --- Accordion & map focus state ---
   const [expandedFleets, setExpandedFleets] = useState<Record<string, boolean>>({});
@@ -531,7 +590,7 @@ export default function FleetDispatchPage() {
     });
 
     if (!streamRes.ok) {
-      throw new Error(`AI Optimization service error: HTTP ${streamRes.status}`);
+      throw new Error(`Optimization service error: HTTP ${streamRes.status}`);
     }
 
     const contentType = streamRes.headers.get("content-type") || "";
@@ -699,22 +758,24 @@ export default function FleetDispatchPage() {
       setIsSettingsOpen(true);
       return;
     }
+    // Auto-hide side panels for distraction-free centralized optimization view
+    setIsLeftPanelOpen(false);
+    setIsSettingsOpen(false);
+    setIsLogConsoleOpen(false);
     setAssigning(true);
-    setAssignStatusText("Initializing AI Solver…");
+    setAssignStatusText("Menyiapkan Sistem Dispatch…");
 
     setSolverLogs([
       {
         time: new Date().toLocaleTimeString("it-IT"),
         stage: "INIT",
         percent: 5,
-        message: `Starting optimization for ${pendingOutlets.length} outlets with ${availableVehicles.length} vehicles (${selectedAlgorithm === "matrix" ? "Matrix ERP" : "Baseline"})...`,
+        message: `Memulai perhitungan rute untuk ${pendingOutlets.length} toko dengan ${availableVehicles.length} armada (${selectedAlgorithm === "matrix" ? "Matrix ERP" : "Baseline"})...`,
         level: "INFO",
       },
     ]);
     setSolverProgress(5);
     setSolverStage("INIT");
-    setIsLogConsoleOpen(true);
-    setIsLogConsoleMinimized(false);
 
     try {
       const useMatrix = selectedAlgorithm === "matrix";
@@ -904,20 +965,20 @@ export default function FleetDispatchPage() {
           time: new Date().toLocaleTimeString("it-IT"),
           stage: "DONE",
           percent: 100,
-          message: `Completed! ${reconstructedRoutes.length} vehicle routes generated. ${unassignedList.length} unassigned.`,
+          message: `Perhitungan selesai! ${reconstructedRoutes.length} rute armada berhasil dibentuk (${unassignedList.length} toko belum teralokasi).`,
           level: "INFO",
         },
       ]);
 
       toast({
-        title: "AI Routes Optimized",
-        description: `${reconstructedRoutes.length} vehicles assigned · ${unassignedList.length} unassigned`,
+        title: "Rute Berhasil Dioptimasi",
+        description: `${reconstructedRoutes.length} armada dialokasikan · ${unassignedList.length} toko belum teralokasi`,
       });
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Assignment failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: "Optimasi Gagal",
+        description: err instanceof Error ? err.message : "Terjadi kesalahan sistem",
       });
     } finally {
       setAssigning(false);
@@ -947,21 +1008,24 @@ export default function FleetDispatchPage() {
       return;
     }
 
+    // Auto-hide side panels for distraction-free centralized optimization view
+    setIsLeftPanelOpen(false);
+    setIsSettingsOpen(false);
+    setIsLogConsoleOpen(false);
+    setAssigning(true);
+    setAssignStatusText(`Menghitung optimasi Ritase ${nextTripNumber}…`);
+    setSolverStage("INIT");
+    setSolverProgress(5);
+
     setSolverLogs([
       {
         time: new Date().toLocaleTimeString("it-IT"),
         stage: "INIT",
         percent: 5,
-        message: `Starting Trip ${nextTripNumber} optimization for ${unassignedOutlets.length} pending outlets...`,
+        message: `Memulai perhitungan rute Ritase ${nextTripNumber} untuk ${unassignedOutlets.length} toko tersisa...`,
         level: "INFO",
       },
     ]);
-    setIsLogConsoleOpen(true);
-    setIsLogConsoleMinimized(false);
-    setAssigning(true);
-    setAssignStatusText(`Calculating Trip ${nextTripNumber} dispatch…`);
-    setSolverStage("INIT");
-    setSolverProgress(5);
 
     try {
       const SERVICE_TIME_PER_STOP_SEC = 900;       // 15 mins per customer stop
@@ -1285,17 +1349,18 @@ export default function FleetDispatchPage() {
       }
 
       setVisibleVehicles((prev) => [...prev, ...nextTripRoutes.map((r) => r.vehicle.NO_KEND)]);
+      setIsLeftPanelOpen(true);
       setSolverProgress(100);
       setSolverStage("DONE");
       toast({
-        title: `Trip ${nextTripNumber} assigned`,
-        description: `${nextTripRoutes.length} vehicle(s) dispatched, ${remainingUnassigned.length} outlet(s) remaining`,
+        title: `Ritase ${nextTripNumber} Berhasil Dibuat`,
+        description: `${nextTripRoutes.length} armada diberangkatkan, ${remainingUnassigned.length} toko tersisa`,
       });
     } catch (err) {
       toast({
         variant: "destructive",
-        title: `Trip ${nextTripNumber} failed`,
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: `Ritase ${nextTripNumber} Gagal`,
+        description: err instanceof Error ? err.message : "Terjadi kesalahan sistem",
       });
     } finally {
       setAssigning(false);
@@ -1475,9 +1540,119 @@ export default function FleetDispatchPage() {
   return (
     <div className="relative w-full h-screen overflow-hidden bg-slate-100 text-slate-800 font-sans">
 
-      {/* ════════════ 1. FULL-SCREEN MAP ════════════ */}
+      {/* ════════════ 1. FULL-SCREEN MAP & CENTRALIZED PROCESSING SCREEN ════════════ */}
       <div className="absolute inset-0 z-0">
-        {!hasRoutes && !isDataLoaded ? (
+        {assigning ? (
+          <div className="relative w-full h-full flex flex-col items-center justify-center bg-slate-950 px-4 py-8 text-white select-none z-10 overflow-hidden">
+            {/* Background ambient radial glow */}
+            <div className="absolute w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-3xl pointer-events-none -top-20" />
+            <div className="absolute w-[400px] h-[400px] bg-indigo-600/10 rounded-full blur-3xl pointer-events-none -bottom-20" />
+
+            {/* Elemen Atas: ThinkingOrb */}
+            <div className="relative z-10 flex items-center justify-center mb-6">
+              <div className="absolute -inset-4 bg-blue-500/20 rounded-full blur-2xl animate-pulse" />
+              <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="dark" />
+            </div>
+
+            {/* Elemen Tengah: Teks Indikator Progres */}
+            <div className="relative z-10 text-center max-w-lg mb-6 space-y-2">
+              <h2 className="text-xl font-bold tracking-tight text-white">
+                Mengalkulasi Rute Optimal
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-400 font-medium">
+                {assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
+              </p>
+
+              {/* Progress Bar & Stage Badge */}
+              <div className="pt-2 flex flex-col items-center gap-2">
+                <div className="w-72 sm:w-96 bg-slate-800/90 rounded-full h-2.5 overflow-hidden border border-slate-700/60 shadow-inner">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full transition-all duration-300 ease-out"
+                    style={{ width: `${Math.max(5, Math.min(100, solverProgress))}%` }}
+                  />
+                </div>
+                <div className="flex items-center gap-2.5 text-xs font-mono text-slate-400">
+                  <span className="font-bold text-blue-400">{solverProgress}%</span>
+                  <span className="text-slate-600">•</span>
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold uppercase tracking-wider border border-slate-700">
+                    {solverStage || "PROSES"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Elemen Bawah: Log Viewer */}
+            <div className="relative z-10 w-full max-w-4xl h-80 bg-gray-950 rounded-xl border border-slate-800/80 shadow-2xl flex flex-col overflow-hidden">
+              {/* Log Header */}
+              <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 text-xs text-slate-400">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-blue-400" />
+                  <span className="font-semibold text-slate-200">Log Proses</span>
+                  <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono">
+                    {solverLogs.length} pesan
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="text-emerald-400 font-medium">Live Stream</span>
+                </div>
+              </div>
+
+              {/* Log Messages (Auto-scrolled) */}
+              <div
+                ref={centralLogContainerRef}
+                className="flex-1 p-3.5 overflow-y-auto font-mono text-xs space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent select-text"
+              >
+                {solverLogs.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-slate-500 italic text-xs">
+                    Menunggu aliran log proses...
+                  </div>
+                ) : (
+                  solverLogs.map((log, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-start gap-2.5 leading-relaxed hover:bg-slate-900/40 px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      <span className="text-slate-500 shrink-0 text-[11px] select-none font-mono">[{log.time}]</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 uppercase select-none ${
+                          log.stage === "INIT"
+                            ? "bg-blue-900/60 text-blue-300 border border-blue-700/50"
+                            : log.stage === "OSRM"
+                            ? "bg-cyan-900/60 text-cyan-300 border border-cyan-700/50"
+                            : log.stage === "SETUP"
+                            ? "bg-purple-900/60 text-purple-300 border border-purple-700/50"
+                            : log.stage === "SOLVE" || log.stage === "SOLVER"
+                            ? "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50"
+                            : log.stage === "DONE"
+                            ? "bg-green-900/60 text-green-300 border border-green-700/50"
+                            : log.stage === "ERROR"
+                            ? "bg-rose-900/60 text-rose-300 border border-rose-700/50"
+                            : "bg-slate-800 text-slate-300 border border-slate-700"
+                        }`}
+                      >
+                        {log.stage || "INFO"}
+                      </span>
+                      <span
+                        className={`flex-1 break-words ${
+                          log.level === "ERROR"
+                            ? "text-rose-400 font-semibold"
+                            : log.level === "WARN"
+                            ? "text-amber-300"
+                            : log.stage === "DONE"
+                            ? "text-emerald-300 font-semibold"
+                            : "text-slate-300"
+                        }`}
+                      >
+                        {formatOperationalLog(log.message)}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        ) : !hasRoutes && !isDataLoaded ? (
           <div className="flex h-full w-full flex-col items-center justify-center text-slate-400 bg-slate-100">
             <Truck className="mb-3 h-16 w-16 opacity-30 text-blue-600" />
             <p className="text-sm font-semibold text-slate-600">No data loaded yet</p>
@@ -1515,7 +1690,8 @@ export default function FleetDispatchPage() {
       </div>
 
       {/* ════════════ 2. FLOATING TOP-RIGHT ACTION DOCK ════════════ */}
-      <div className="absolute top-4 right-4 z-[1000] flex items-center gap-1.5 p-1.5 bg-white/90 backdrop-blur-md rounded-2xl border border-slate-200/80 shadow-md">
+      {!assigning && (
+        <div className="absolute top-4 right-4 z-[1000] flex items-center gap-1.5 p-1.5 bg-white/90 backdrop-blur-md rounded-2xl border border-slate-200/80 shadow-md">
         {!hasRoutes ? (
           <>
             {!isDataLoaded && bothLoaded && (
@@ -1656,37 +1832,39 @@ export default function FleetDispatchPage() {
           <span className="hidden sm:inline">Settings</span>
         </Button>
       </div>
+      )}
 
       {/* ════════════ 3. LEFT DISPATCH DESK (COLLAPSIBLE FLOATING WIDGET) ════════════ */}
-      {!isLeftPanelOpen ? (
-        <button
-          onClick={() => setIsLeftPanelOpen(true)}
-          className="absolute top-4 left-4 z-[1000] flex items-center gap-2 px-3.5 py-2 bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-lg hover:shadow-xl text-slate-700 hover:text-blue-600 transition-all cursor-pointer text-xs font-bold"
-          title="Open Dispatch Desk"
-        >
-          <Menu className="h-4 w-4" />
-          <span>Dispatch Desk</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-blue-50 text-blue-700 font-bold border border-blue-200">
-            {assignedRoutes.length}
-          </span>
-          {unassignedOutlets.length > 0 && (
-            <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-          )}
-        </button>
-      ) : (
-        <div className="absolute top-4 bottom-4 left-4 z-[1000] w-88 max-h-[calc(100vh-2rem)] bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/90 shadow-xl shadow-slate-900/10 overflow-hidden flex flex-col transition-all">
-          {/* Panel Header: Brand Title, Client Badge & Live Dispatch Stats */}
-          <div className="shrink-0 p-3 bg-white border-b border-slate-100 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="p-1.5 rounded-xl bg-blue-600 text-white shadow-xs flex items-center justify-center shrink-0">
-                  <Truck className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <h1 className="text-xs font-extrabold text-slate-900 tracking-tight truncate">
-                      AI Route Dispatcher
-                    </h1>
+      {!assigning && (
+        !isLeftPanelOpen ? (
+          <button
+            onClick={() => setIsLeftPanelOpen(true)}
+            className="absolute top-4 left-4 z-[1000] flex items-center gap-2 px-3.5 py-2 bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-lg hover:shadow-xl text-slate-700 hover:text-blue-600 transition-all cursor-pointer text-xs font-bold"
+            title="Open Dispatch Desk"
+          >
+            <Menu className="h-4 w-4" />
+            <span>Dispatch Desk</span>
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-blue-50 text-blue-700 font-bold border border-blue-200">
+              {assignedRoutes.length}
+            </span>
+            {unassignedOutlets.length > 0 && (
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+            )}
+          </button>
+        ) : (
+          <div className="absolute top-4 bottom-4 left-4 z-[1000] w-88 max-h-[calc(100vh-2rem)] bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/90 shadow-xl shadow-slate-900/10 overflow-hidden flex flex-col transition-all">
+            {/* Panel Header: Brand Title, Client Badge & Live Dispatch Stats */}
+            <div className="shrink-0 p-3 bg-white border-b border-slate-100 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="p-1.5 rounded-xl bg-blue-600 text-white shadow-xs flex items-center justify-center shrink-0">
+                    <Truck className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <h1 className="text-xs font-extrabold text-slate-900 tracking-tight truncate">
+                        Route Dispatcher
+                      </h1>
                     <span
                       className={`text-[9px] font-bold px-1.5 py-0.2 rounded-md border shrink-0 ${
                         selectedAlgorithm === "matrix"
@@ -2205,10 +2383,11 @@ export default function FleetDispatchPage() {
             </div>
           )}
         </div>
-      )}
+      )
+    )}
 
       {/* ════════════ 4. RIGHT SETTINGS & UPLOADS WIDGET (COLLAPSIBLE FLOATING) ════════════ */}
-      {isSettingsOpen && (
+      {isSettingsOpen && !assigning && (
         <div className="absolute top-16 right-4 z-[1000] w-80 bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200 shadow-2xl p-4 flex flex-col gap-3.5 animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="flex items-center justify-between pb-2 border-b border-slate-100">
             <div className="flex items-center gap-2">
@@ -2550,18 +2729,14 @@ export default function FleetDispatchPage() {
       )}
 
       {/* ════════════ 5. REOPEN FLOATING PILL (DOCKED BOTTOM-RIGHT) ════════════ */}
-      {!isLogConsoleOpen && (solverLogs.length > 0 || assigning) && (
+      {!isLogConsoleOpen && !assigning && solverLogs.length > 0 && (
         <button
           onClick={() => setIsLogConsoleOpen(true)}
           className="fixed bottom-5 right-5 z-[2000] flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/95 hover:bg-slate-50 border border-slate-200/90 shadow-xl text-xs text-slate-700 transition-all backdrop-blur-md cursor-pointer font-bold hover:shadow-2xl hover:border-slate-300"
-          title="Open AI Solver Console"
+          title="Buka Log Proses Dispatch"
         >
-          {assigning ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
-          ) : (
-            <Terminal className="h-3.5 w-3.5 text-emerald-600" />
-          )}
-          <span>{assigning ? "Solving Pipeline..." : "Solver Console"}</span>
+          <Terminal className="h-3.5 w-3.5 text-emerald-600" />
+          <span>Log Proses Dispatch</span>
           <span className="font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
             {solverProgress}%
           </span>
@@ -2570,7 +2745,7 @@ export default function FleetDispatchPage() {
 
       {/* ════════════ 6. REAL-TIME SOLVER CONSOLE MODAL ════════════ */}
       <SolverConsoleModal
-        isOpen={isLogConsoleOpen}
+        isOpen={isLogConsoleOpen && !assigning}
         onClose={() => setIsLogConsoleOpen(false)}
         isMinimized={isLogConsoleMinimized}
         onToggleMinimize={() => setIsLogConsoleMinimized(!isLogConsoleMinimized)}

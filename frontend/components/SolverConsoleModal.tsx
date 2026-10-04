@@ -121,7 +121,7 @@ export default function SolverConsoleModal({
           </div>
           <div className="flex items-center gap-2 truncate">
             <span className="text-xs font-bold text-slate-900 uppercase tracking-wider shrink-0">
-              AI Solver Console
+              Log Proses Dispatch
             </span>
             <span
               className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-md border shrink-0 tracking-wider ${getBadgeClass(

@@ -28,6 +28,7 @@
     "react-leaflet": "^5.0.0",
     "tailwind-merge": "^2.5.4",
     "tailwindcss-animate": "^1.0.7",
+    "thinking-orbs": "^0.3.2",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
