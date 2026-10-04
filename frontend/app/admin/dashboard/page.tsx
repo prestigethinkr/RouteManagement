@@ -1528,6 +1528,17 @@ export default function FleetDispatchPage() {
               )}
               <span>{assigning ? "Optimizing…" : "Auto-Assign Fleet"}</span>
             </Button>
+
+            {/* Download Excel Log (Visible but disabled before routing) */}
+            <Button
+              variant="outline"
+              disabled={true}
+              className="border-slate-200 text-slate-400 bg-slate-50/50 text-xs h-8 px-3 rounded-xl gap-1.5 font-semibold cursor-not-allowed opacity-60"
+              title="Jalankan Auto-Assign Fleet terlebih dahulu untuk mengunduh log Excel"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5 text-slate-400" />
+              <span>Download Excel Log</span>
+            </Button>
           </>
         ) : (
           <>
