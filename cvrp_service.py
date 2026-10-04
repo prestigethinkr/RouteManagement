@@ -2351,6 +2351,10 @@ def build_cvrp_excel_bytes(
         if outlet_id in pruned_set:
             pct = int(getattr(request_payload, "min_epe_threshold", 0.0) * 100)
             reason = f"Pruned: Vehicle EPE < {pct}% (Pooled for Next Trip)"
+        elif max_fleet_m3 > 0 and outlet.m3 > max_fleet_m3 * 3:
+            reason = "EXCEEDS_3X_MAX_CAPACITY (DUMMY SO)"
+        elif max_fleet_kg > 0 and outlet.kg > max_fleet_kg * 3:
+            reason = "EXCEEDS_3X_MAX_CAPACITY (DUMMY SO)"
         elif max_fleet_m3 > 0 and outlet.m3 > max_fleet_m3:
             reason = f"Capacity Exceeded (M3: {outlet.m3:.3f} > Fleet Max: {max_fleet_m3:.3f})"
         elif max_fleet_kg > 0 and outlet.kg > max_fleet_kg:
@@ -2518,6 +2522,30 @@ async def optimize(payload: OptimizeRequest):
     # Deterministic input ordering by ID before OSRM matrix fetching and solver dispatch
     outlets = sorted(payload.outlets, key=lambda o: str(o.id))
     vehicles = sorted(payload.vehicles, key=lambda v: str(v.id))
+    
+    # ── Dummy SO / Impossible Payload Filter ──
+    if vehicles:
+        max_fleet_m3 = max(v.max_m3 for v in vehicles)
+        max_fleet_kg = max(v.max_kg for v in vehicles)
+    else:
+        max_fleet_m3 = float("inf")
+        max_fleet_kg = float("inf")
+        
+    abs_max_m3 = max_fleet_m3 * 3
+    abs_max_kg = max_fleet_kg * 3
+
+    valid_outlets = []
+    dummy_so_ids = []
+    
+    for outlet in outlets:
+        if outlet.m3 > abs_max_m3 or outlet.kg > abs_max_kg:
+            dummy_so_ids.append(outlet.id)
+            log.warning(f"Dummy SO Detected: {outlet.id} (M3: {outlet.m3}, KG: {outlet.kg}) exceeds 3x max capacity.")
+        else:
+            valid_outlets.append(outlet)
+            
+    outlets = valid_outlets
+
     depot = payload.depot
     use_matrix = payload.use_matrix_constraints
     mode_label = "ortools-matrix" if use_matrix else "ortools"
@@ -2590,6 +2618,8 @@ async def optimize(payload: OptimizeRequest):
                             durations, distances, outlets, vehicles, payload.max_stops, effective_min_epe,
                             push_progress,
                         )
+
+                    unassigned.extend(dummy_so_ids)
 
                     t_solve = time.monotonic() - t_solve0
                     push_progress("SOLVE", 90, f"OR-Tools finished in {t_solve:.2f}s: {len(assigned_routes)} routes active{ritase_label}, {pruned_count} pruned, {len(unassigned)} unassigned")
@@ -2685,6 +2715,8 @@ async def optimize(payload: OptimizeRequest):
             solve_cvrp,
             durations, distances, outlets, vehicles, payload.max_stops, effective_min_epe,
         )
+
+    unassigned.extend(dummy_so_ids)
 
     _execution_time = time.monotonic() - _t0
 
