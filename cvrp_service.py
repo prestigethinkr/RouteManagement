@@ -694,6 +694,9 @@ def solve_cvrp(
     )
 
     # ── Min EPE Pruning (Kill Switch) ──────
+    served_ids = {oid for r in assigned_routes for oid in r.route}
+    unassigned = [o.id for o in outlets if o.id not in served_ids]
+
     assigned_routes, kill_switched_unassigned, pruned_count, kill_switched_ids = _dissolve_low_epe_routes(
         assigned_routes, vehicles, min_epe_threshold
     )
