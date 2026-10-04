@@ -206,6 +206,10 @@ class OptimizeRequest(BaseModel):
         default=10000000,
         description="Starting 8-digit recap number, e.g. 10000000",
     )
+    use_time_limit: bool = Field(
+        default=True,
+        description="If true, apply the 8-hour operational time limit. If false, run without a time limit.",
+    )
     stream: bool = Field(
         default=False,
         description="If true, stream real-time logs and progress as Server-Sent Events (SSE)",
@@ -243,6 +247,7 @@ class ExportExcelLogRequest(BaseModel):
     algorithm: str = "ortools"
     max_stops: int = 40
     min_epe_threshold: float = 0.0
+    use_time_limit: bool = True
     pruned_routes_count: int = 0
 
 
@@ -470,6 +475,7 @@ def solve_cvrp(
     vehicles: list[VehicleIn],
     max_stops: int = 40,
     min_epe_threshold: float = 0.0,
+    use_time_limit: bool = True,
     progress_cb: Any = None,
 ) -> tuple[list[AssignedRouteOut], list[str], int, dict[str, str], list[OutletIn], dict[str, list[OutletIn]]]:
     """
@@ -524,10 +530,11 @@ def solve_cvrp(
         ]
 
     time_cb_idx = routing.RegisterTransitCallback(raw_time_cb)
+    actual_max_time = MAX_VEHICLE_TIME if use_time_limit else 86400 * 7
     routing.AddDimension(
         time_cb_idx,
         0,                  # no waiting/slack
-        MAX_VEHICLE_TIME,   # cumulative upper bound per vehicle
+        actual_max_time,   # cumulative upper bound per vehicle
         True,               # start cumul to zero
         "Time",
     )
@@ -1566,6 +1573,7 @@ def _solve_single_zone_matrix(
     max_stops: int = 40,
     max_grouppayer: int = 50,
     time_limit_s: int = 15,
+    use_time_limit: bool = True,
     progress_cb: Any = None,
     zone_idx: int = 1,
     total_zones: int = 1,
@@ -1609,12 +1617,13 @@ def _solve_single_zone_matrix(
             fixed_cost = FIXED_COST_LARGE
         routing.SetFixedCostOfVehicle(fixed_cost, v_idx)
 
-    # DIMENSION: Time (8 hours cap)
+    # DIMENSION: Time (8 hours cap or infinite)
     def raw_time_cb(from_idx: int, to_idx: int) -> int:
         return int_dur[manager.IndexToNode(from_idx)][manager.IndexToNode(to_idx)]
 
     time_cb_idx = routing.RegisterTransitCallback(raw_time_cb)
-    routing.AddDimension(time_cb_idx, 0, MAX_VEHICLE_TIME, True, "Time")
+    actual_max_time = MAX_VEHICLE_TIME if use_time_limit else 86400 * 7
+    routing.AddDimension(time_cb_idx, 0, actual_max_time, True, "Time")
 
     # DIMENSION: Volume
     def m3_cb(from_idx: int) -> int:
@@ -1880,6 +1889,7 @@ def solve_cvrp_matrix(
     max_stops: int = 40,
     max_grouppayer: int = 50,
     min_epe_threshold: float = 0.0,
+    use_time_limit: bool = True,
     progress_cb: Any = None,
 ) -> tuple[list[AssignedRouteOut], list[str], int, dict[str, str], list[OutletIn], dict[str, list[OutletIn]]]:
     """
@@ -2036,6 +2046,7 @@ def solve_cvrp_matrix(
             max_stops=max_stops,
             max_grouppayer=max_grouppayer,
             time_limit_s=15,
+            use_time_limit=use_time_limit,
             progress_cb=progress_cb,
             zone_idx=zone_idx,
             total_zones=total_phases,
@@ -2101,6 +2112,7 @@ def solve_cvrp_matrix(
                 max_stops=max_stops,
                 max_grouppayer=max_grouppayer,
                 time_limit_s=15,
+                use_time_limit=use_time_limit,
                 progress_cb=progress_cb,
                 zone_idx=unknown_idx,
                 total_zones=total_phases,
@@ -2708,14 +2720,14 @@ async def optimize(payload: OptimizeRequest):
                             None,
                             solve_cvrp_matrix,
                             durations, distances, outlets, vehicles,
-                            payload.max_stops, payload.max_grouppayer, effective_min_epe,
+                            payload.max_stops, payload.max_grouppayer, effective_min_epe, payload.use_time_limit,
                             push_progress,
                         )
                     else:
                         assigned_routes, unassigned, pruned_count, pruned_ids, split_outlets, expansion_map = await loop.run_in_executor(
                             None,
                             solve_cvrp,
-                            durations, distances, outlets, vehicles, payload.max_stops, effective_min_epe,
+                            durations, distances, outlets, vehicles, payload.max_stops, effective_min_epe, payload.use_time_limit,
                             push_progress,
                         )
 
@@ -2807,13 +2819,13 @@ async def optimize(payload: OptimizeRequest):
             None,
             solve_cvrp_matrix,
             durations, distances, outlets, vehicles,
-            payload.max_stops, payload.max_grouppayer, effective_min_epe,
+            payload.max_stops, payload.max_grouppayer, effective_min_epe, payload.use_time_limit
         )
     else:
         assigned_routes, unassigned, pruned_count, pruned_ids, split_outlets, expansion_map = await loop.run_in_executor(
             None,
             solve_cvrp,
-            durations, distances, outlets, vehicles, payload.max_stops, effective_min_epe,
+            durations, distances, outlets, vehicles, payload.max_stops, effective_min_epe, payload.use_time_limit
         )
 
     unassigned.extend(dummy_so_ids)

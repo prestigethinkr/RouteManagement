@@ -106,8 +106,8 @@ export default function FleetDispatchPage() {
   // --- Algorithm / Constraint Mode state ---
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<"matrix" | "ortools">("matrix");
   const [viewingAlgorithm, setViewingAlgorithm] = useState<"matrix" | "ortools">("matrix");
-  const [ortoolsResult, setOrtoolsResult] = useState<{ routes: AssignedRoute[]; unassigned: PendingOutlet[] } | null>(null);
-  const [matrixResult, setMatrixResult] = useState<{ routes: AssignedRoute[]; unassigned: PendingOutlet[] } | null>(null);
+  const [ortoolsResult, setOrtoolsResult] = useState<{ routes: AssignedRoute[]; unassigned: PendingOutlet[]; pruned_routes_count?: number } | null>(null);
+  const [matrixResult, setMatrixResult] = useState<{ routes: AssignedRoute[]; unassigned: PendingOutlet[]; pruned_routes_count?: number } | null>(null);
   const [isDownloadingExcel, setIsDownloadingExcel] = useState(false);
 
   // --- Derived: active result for current view ---
@@ -149,6 +149,7 @@ export default function FleetDispatchPage() {
 
   // --- Max stops per vehicle ---
   const [maxStops, setMaxStops] = useState(40);
+  const [useTimeLimit, setUseTimeLimit] = useState(true);
 
   // --- Min EPE Threshold (%) for Trip 1 Route Pruning ---
   const [minEpeThreshold, setMinEpeThreshold] = useState(80);
@@ -751,6 +752,7 @@ export default function FleetDispatchPage() {
         max_stops: maxStops > 0 ? maxStops : 40,
         use_matrix_constraints: useMatrix,
         min_epe_threshold: minEpeThreshold > 0 ? minEpeThreshold / 100 : 0.0,
+        use_time_limit: useTimeLimit,
         start_recap_no: 10000000,
       };
 
@@ -878,7 +880,11 @@ export default function FleetDispatchPage() {
         .map((id: string) => resolveOutlet(id, outletMap))
         .filter((o: PendingOutlet | undefined): o is PendingOutlet => o !== undefined);
 
-      const newResult = { routes: reconstructedRoutes, unassigned: unassignedList };
+      const newResult = {
+        routes: reconstructedRoutes,
+        unassigned: unassignedList,
+        pruned_routes_count: optimizedData.pruned_routes_count || 0,
+      };
       if (useMatrix) {
         setMatrixResult(newResult);
         setViewingAlgorithm("matrix");
@@ -1378,6 +1384,8 @@ export default function FleetDispatchPage() {
         algorithm: viewingAlgorithm === "matrix" ? "ortools-matrix" : "ortools",
         max_stops: maxStops > 0 ? maxStops : 40,
         min_epe_threshold: minEpeThreshold > 0 ? minEpeThreshold / 100 : 0.0,
+        use_time_limit: useTimeLimit,
+        pruned_routes_count: (viewingAlgorithm === "matrix" ? matrixResult : ortoolsResult)?.pruned_routes_count || 0,
       };
 
       const res = await fetch(`${getCvrpApiBase()}/export-excel-log`, {
@@ -2411,8 +2419,45 @@ export default function FleetDispatchPage() {
             </p>
           </div>
 
+          {/* Operational Time Limit */}
+          <div className="space-y-2 py-2 border-t border-slate-100">
+            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              <span>Batas Waktu Operasional</span>
+              <span className={`px-2 py-0.5 rounded text-[9px] ${
+                useTimeLimit
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-slate-100 text-slate-500"
+              }`}>
+                {useTimeLimit ? "8 JAM (ON)" : "UNLIMITED (OFF)"}
+              </span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-600 font-medium">Aktifkan Batas Waktu</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={useTimeLimit}
+                onClick={() => setUseTimeLimit(!useTimeLimit)}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white ${
+                  useTimeLimit ? 'bg-blue-600' : 'bg-slate-200'
+                }`}
+              >
+                <span className="sr-only">Aktifkan Batas Waktu</span>
+                <span
+                  className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-lg ring-0 transition-transform ${
+                    useTimeLimit ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 leading-tight">
+              Jika aktif, rute satu kendaraan tidak akan melebihi 8 jam total waktu perjalanan.
+            </p>
+          </div>
+
           {/* Max Stops per Vehicle */}
-          <div className="space-y-1">
+          <div className="space-y-1 py-2 border-t border-slate-100">
             <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
               <span>Max Stops per Vehicle</span>
               <span className="text-slate-700 font-mono">{maxStops} stops</span>
