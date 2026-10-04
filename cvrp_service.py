@@ -1924,7 +1924,7 @@ def solve_cvrp_matrix(
         progress_cb(
             "MATRIX",
             41,
-            f"Data Master: {orig_mapped} terdaftar di zona, {inferred_cnt} disesuaikan ke zona, {unknown_cnt} luar zona | Armada: {dedicated_count} khusus zona, {float_count} fleksibel"
+            f"Data Master: {orig_mapped} terdaftar di distrik, {inferred_cnt} disesuaikan ke distrik, {unknown_cnt} luar distrik | Armada: {dedicated_count} khusus distrik, {float_count} fleksibel"
         )
 
     # ── Step 1: Preprocessing & GroupPayer / SDVRP consolidation ───────
@@ -2014,7 +2014,7 @@ def solve_cvrp_matrix(
             all_unassigned_outlets.extend(o.id for o in z_outlets)
             if progress_cb:
                 pct = 45 + int((zone_idx / total_phases) * 40)
-                progress_cb("ZONE", pct, f"Zona {zone_name} ({zone_idx}/{total_phases}): Tidak ada armada langsung -> {len(z_outlets)} toko dialihkan ke pencarian armada lain")
+                progress_cb("ZONE", pct, f"Distrik {zone_name} ({zone_idx}/{total_phases}): Tidak ada armada langsung -> {len(z_outlets)} toko dialihkan ke pencarian armada lain")
             continue
 
         # Slicing duration and distance submatrices
@@ -2073,7 +2073,7 @@ def solve_cvrp_matrix(
         )
         if progress_cb:
             pct = 45 + int((zone_idx / total_phases) * 40)
-            progress_cb("ZONE", pct, f"Zona {zone_name} selesai dalam {t_z:.1f} detik: {len(z_assigned)} rute terbentuk (rata-rata muatan {avg_z_epe:.1f}%), {len(z_unassigned)} toko belum teralokasi")
+            progress_cb("ZONE", pct, f"Distrik {zone_name} selesai dalam {t_z:.1f} detik: {len(z_assigned)} rute terbentuk (rata-rata muatan {avg_z_epe:.1f}%), {len(z_unassigned)} toko belum teralokasi")
 
         all_assigned_routes.extend(z_assigned)
         all_unassigned_outlets.extend(z_unassigned)
@@ -2090,7 +2090,7 @@ def solve_cvrp_matrix(
             )
             if progress_cb:
                 pct = 45 + int(((unknown_idx - 1) / total_phases) * 40)
-                progress_cb("ZONE", pct, f"Menghitung rute toko luar zona ({unknown_idx}/{total_phases}): {len(unknown_outlets)} toko dengan {len(u_vehicles)} armada fleksibel...")
+                progress_cb("ZONE", pct, f"Menghitung rute toko luar distrik ({unknown_idx}/{total_phases}): {len(unknown_outlets)} toko dengan {len(u_vehicles)} armada fleksibel...")
 
             u_matrix_indices = [0]
             for mo in unknown_outlets:
@@ -2127,7 +2127,7 @@ def solve_cvrp_matrix(
             )
             if progress_cb:
                 pct = 45 + int((unknown_idx / total_phases) * 40)
-                progress_cb("ZONE", pct, f"Toko luar zona selesai dalam {t_u:.1f} detik: {len(u_assigned)} rute terbentuk, {len(u_unassigned)} toko belum teralokasi")
+                progress_cb("ZONE", pct, f"Toko luar distrik selesai dalam {t_u:.1f} detik: {len(u_assigned)} rute terbentuk, {len(u_unassigned)} toko belum teralokasi")
             all_assigned_routes.extend(u_assigned)
             all_unassigned_outlets.extend(u_unassigned)
         else:
@@ -2138,7 +2138,7 @@ def solve_cvrp_matrix(
             all_unassigned_outlets.extend(o.id for o in unknown_outlets)
             if progress_cb:
                 pct = 45 + int((unknown_idx / total_phases) * 40)
-                progress_cb("ZONE", pct, f"Toko luar zona: Tidak ada armada fleksibel -> {len(unknown_outlets)} toko dialihkan ke pencarian armada lain")
+                progress_cb("ZONE", pct, f"Toko luar distrik: Tidak ada armada fleksibel -> {len(unknown_outlets)} toko dialihkan ke pencarian armada lain")
 
     # ── Tier 3 / Phase C1: Enforce All-or-Nothing Splits (Yanker) ────────
     if progress_cb:
