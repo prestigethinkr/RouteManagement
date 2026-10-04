@@ -1540,119 +1540,9 @@ export default function FleetDispatchPage() {
   return (
     <div className="relative w-full h-screen overflow-hidden bg-slate-100 text-slate-800 font-sans">
 
-      {/* ════════════ 1. FULL-SCREEN MAP & CENTRALIZED PROCESSING SCREEN ════════════ */}
+      {/* ════════════ 1. FULL-SCREEN MAP & DATA LOADERS ════════════ */}
       <div className="absolute inset-0 z-0">
-        {assigning ? (
-          <div className="relative w-full h-full flex flex-col items-center justify-center bg-slate-950 px-4 py-8 text-white select-none z-10 overflow-hidden">
-            {/* Background ambient radial glow */}
-            <div className="absolute w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-3xl pointer-events-none -top-20" />
-            <div className="absolute w-[400px] h-[400px] bg-indigo-600/10 rounded-full blur-3xl pointer-events-none -bottom-20" />
-
-            {/* Elemen Atas: ThinkingOrb */}
-            <div className="relative z-10 flex items-center justify-center mb-6">
-              <div className="absolute -inset-4 bg-blue-500/20 rounded-full blur-2xl animate-pulse" />
-              <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="dark" />
-            </div>
-
-            {/* Elemen Tengah: Teks Indikator Progres */}
-            <div className="relative z-10 text-center max-w-lg mb-6 space-y-2">
-              <h2 className="text-xl font-bold tracking-tight text-white">
-                Mengalkulasi Rute Optimal
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-400 font-medium">
-                {assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
-              </p>
-
-              {/* Progress Bar & Stage Badge */}
-              <div className="pt-2 flex flex-col items-center gap-2">
-                <div className="w-72 sm:w-96 bg-slate-800/90 rounded-full h-2.5 overflow-hidden border border-slate-700/60 shadow-inner">
-                  <div
-                    className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full transition-all duration-300 ease-out"
-                    style={{ width: `${Math.max(5, Math.min(100, solverProgress))}%` }}
-                  />
-                </div>
-                <div className="flex items-center gap-2.5 text-xs font-mono text-slate-400">
-                  <span className="font-bold text-blue-400">{solverProgress}%</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold uppercase tracking-wider border border-slate-700">
-                    {solverStage || "PROSES"}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Elemen Bawah: Log Viewer */}
-            <div className="relative z-10 w-full max-w-4xl h-80 bg-gray-950 rounded-xl border border-slate-800/80 shadow-2xl flex flex-col overflow-hidden">
-              {/* Log Header */}
-              <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 text-xs text-slate-400">
-                <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-blue-400" />
-                  <span className="font-semibold text-slate-200">Log Proses</span>
-                  <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono">
-                    {solverLogs.length} pesan
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-[11px]">
-                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
-                  <span className="text-emerald-400 font-medium">Live Stream</span>
-                </div>
-              </div>
-
-              {/* Log Messages (Auto-scrolled) */}
-              <div
-                ref={centralLogContainerRef}
-                className="flex-1 p-3.5 overflow-y-auto font-mono text-xs space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent select-text"
-              >
-                {solverLogs.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-slate-500 italic text-xs">
-                    Menunggu aliran log proses...
-                  </div>
-                ) : (
-                  solverLogs.map((log, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-start gap-2.5 leading-relaxed hover:bg-slate-900/40 px-1.5 py-0.5 rounded transition-colors"
-                    >
-                      <span className="text-slate-500 shrink-0 text-[11px] select-none font-mono">[{log.time}]</span>
-                      <span
-                        className={`text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 uppercase select-none ${
-                          log.stage === "INIT"
-                            ? "bg-blue-900/60 text-blue-300 border border-blue-700/50"
-                            : log.stage === "OSRM"
-                            ? "bg-cyan-900/60 text-cyan-300 border border-cyan-700/50"
-                            : log.stage === "SETUP"
-                            ? "bg-purple-900/60 text-purple-300 border border-purple-700/50"
-                            : log.stage === "SOLVE" || log.stage === "SOLVER"
-                            ? "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50"
-                            : log.stage === "DONE"
-                            ? "bg-green-900/60 text-green-300 border border-green-700/50"
-                            : log.stage === "ERROR"
-                            ? "bg-rose-900/60 text-rose-300 border border-rose-700/50"
-                            : "bg-slate-800 text-slate-300 border border-slate-700"
-                        }`}
-                      >
-                        {log.stage || "INFO"}
-                      </span>
-                      <span
-                        className={`flex-1 break-words ${
-                          log.level === "ERROR"
-                            ? "text-rose-400 font-semibold"
-                            : log.level === "WARN"
-                            ? "text-amber-300"
-                            : log.stage === "DONE"
-                            ? "text-emerald-300 font-semibold"
-                            : "text-slate-300"
-                        }`}
-                      >
-                        {formatOperationalLog(log.message)}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        ) : !hasRoutes && !isDataLoaded ? (
+        {!hasRoutes && !isDataLoaded ? (
           <div className="flex h-full w-full flex-col items-center justify-center text-slate-400 bg-slate-100">
             <Truck className="mb-3 h-16 w-16 opacity-30 text-blue-600" />
             <p className="text-sm font-semibold text-slate-600">No data loaded yet</p>
@@ -1688,6 +1578,120 @@ export default function FleetDispatchPage() {
           />
         )}
       </div>
+
+      {/* ════════════ 1.5 PROCESSING CARD OVERLAY ════════════ */}
+      {assigning && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/30 backdrop-blur-sm px-4 py-8 overflow-hidden">
+          <div className="relative w-full max-w-3xl bg-white rounded-3xl shadow-2xl border border-slate-200 p-8 flex flex-col items-center overflow-hidden animate-in fade-in zoom-in-95 duration-300">
+            {/* Ambient subtle glow */}
+            <div className="absolute w-[400px] h-[400px] bg-blue-100/50 rounded-full blur-3xl pointer-events-none -top-20" />
+            
+            {/* Elemen Atas: ThinkingOrb */}
+            <div className="relative z-10 flex items-center justify-center mb-6">
+              <div className="absolute -inset-4 bg-blue-100/50 rounded-full blur-2xl animate-pulse" />
+              <ThinkingOrb state={getOrbState(solverStage)} size={64} theme="light" />
+            </div>
+
+            {/* Elemen Tengah: Teks Indikator Progres */}
+            <div className="relative z-10 text-center max-w-lg mb-6 space-y-2">
+              <h2 className="text-xl font-bold tracking-tight text-slate-800">
+                Mengalkulasi Rute Optimal
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-500 font-medium">
+                {assignStatusText || "Sistem sedang menghitung pembagian rute dan armada pengiriman..."}
+              </p>
+
+              {/* Progress Bar & Stage Badge */}
+              <div className="pt-2 flex flex-col items-center gap-2">
+                <div className="w-72 sm:w-96 bg-slate-100 rounded-full h-2.5 overflow-hidden border border-slate-200 shadow-inner">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full transition-all duration-300 ease-out"
+                    style={{ width: `${Math.max(5, Math.min(100, solverProgress))}%` }}
+                  />
+                </div>
+                <div className="flex items-center gap-2.5 text-xs font-mono text-slate-500">
+                  <span className="font-bold text-blue-600">{solverProgress}%</span>
+                  <span className="text-slate-400">•</span>
+                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold uppercase tracking-wider border border-slate-200">
+                    {solverStage || "PROSES"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Elemen Bawah: Log Viewer */}
+            <div className="relative z-10 w-full h-72 bg-slate-50 rounded-xl border border-slate-200 shadow-inner flex flex-col overflow-hidden">
+              {/* Log Header */}
+              <div className="flex items-center justify-between px-4 py-2.5 bg-white border-b border-slate-200 text-xs text-slate-500">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-blue-600" />
+                  <span className="font-semibold text-slate-700">Log Proses</span>
+                  <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-500 font-mono border border-slate-200">
+                    {solverLogs.length} pesan
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+                  <span className="text-emerald-600 font-medium">Live Stream</span>
+                </div>
+              </div>
+
+              {/* Log Messages (Auto-scrolled) */}
+              <div
+                ref={centralLogContainerRef}
+                className="flex-1 p-3.5 overflow-y-auto font-mono text-xs space-y-1.5 scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-transparent select-text"
+              >
+                {solverLogs.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-slate-400 italic text-xs">
+                    Menunggu aliran log proses...
+                  </div>
+                ) : (
+                  solverLogs.map((log, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-start gap-2.5 leading-relaxed hover:bg-slate-100/80 px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      <span className="text-slate-400 shrink-0 text-[11px] select-none font-mono">[{log.time}]</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 uppercase select-none ${
+                          log.stage === "INIT"
+                            ? "bg-blue-100 text-blue-700 border border-blue-200"
+                            : log.stage === "OSRM"
+                            ? "bg-cyan-100 text-cyan-700 border border-cyan-200"
+                            : log.stage === "SETUP"
+                            ? "bg-purple-100 text-purple-700 border border-purple-200"
+                            : log.stage === "SOLVE" || log.stage === "SOLVER"
+                            ? "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                            : log.stage === "DONE"
+                            ? "bg-green-100 text-green-700 border border-green-200"
+                            : log.stage === "ERROR"
+                            ? "bg-rose-100 text-rose-700 border border-rose-200"
+                            : "bg-slate-100 text-slate-700 border border-slate-200"
+                        }`}
+                      >
+                        {log.stage || "INFO"}
+                      </span>
+                      <span
+                        className={`flex-1 break-words ${
+                          log.level === "ERROR"
+                            ? "text-rose-600 font-semibold"
+                            : log.level === "WARN"
+                            ? "text-amber-600"
+                            : log.stage === "DONE"
+                            ? "text-emerald-600 font-semibold"
+                            : "text-slate-600"
+                        }`}
+                      >
+                        {formatOperationalLog(log.message)}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ════════════ 2. FLOATING TOP-RIGHT ACTION DOCK ════════════ */}
       {!assigning && (
