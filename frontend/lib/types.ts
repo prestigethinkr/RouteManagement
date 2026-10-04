@@ -45,6 +45,7 @@ export interface PendingOutlet {
   is_cross_zone_swept?: boolean;
   is_zone_inferred?: boolean;
   recap_no?: string;
+  drop_reason?: string;
 }
 
 /** A single vehicle from the fleet upload */

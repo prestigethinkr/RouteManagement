@@ -226,6 +226,7 @@ class AssignedRouteOut(BaseModel):
 class OptimizeResponse(BaseModel):
     assigned_routes: list[AssignedRouteOut]
     unassigned_outlets: list[str]
+    drop_reasons: dict[str, str] = Field(default_factory=dict)
     pruned_routes_count: int = 0
     split_outlets: list[OutletIn] = []
     excel_filename: str | None = None
@@ -238,6 +239,7 @@ class ExportExcelLogRequest(BaseModel):
     vehicles: list[VehicleIn]
     assigned_routes: list[AssignedRouteOut]
     unassigned_outlets: list[str] = Field(default_factory=list)
+    drop_reasons: dict[str, str] = Field(default_factory=dict)
     algorithm: str = "ortools"
     max_stops: int = 40
     min_epe_threshold: float = 0.0
@@ -370,60 +372,95 @@ def _build_int_matrices(
     return int_dur, hybrid
 
 
-def _filter_low_epe_routes(
+def _enforce_all_or_nothing_splits(
+    assigned_routes: list[AssignedRouteOut],
+    unassigned_ids: list[str],
+    merged_outlets: list[OutletIn]
+) -> tuple[list[AssignedRouteOut], list[str], set[str]]:
+    """
+    Scan unassigned_ids. If any split part (e.g., _SPLIT_) is found, extract its root ID.
+    Scan assigned_routes and remove all assigned sibling splits matching that root ID.
+    Subtract their capacity from the vehicle, move them to unassigned_ids.
+    Returns (assigned_routes, unassigned_ids, yanked_roots).
+    """
+    yanked_roots = set()
+    mo_map = {mo.id: mo for mo in merged_outlets}
+    
+    for uid in unassigned_ids:
+        m = re.match(r"^(.*)_SPLIT_\d+$", uid)
+        if m:
+            yanked_roots.add(m.group(1))
+            
+    if not yanked_roots:
+        return assigned_routes, unassigned_ids, yanked_roots
+        
+    yanked_ids = set()
+    for route in assigned_routes:
+        new_route = []
+        for oid in route.route:
+            m = re.match(r"^(.*)_SPLIT_\d+$", oid)
+            is_yanked = False
+            if m and m.group(1) in yanked_roots:
+                is_yanked = True
+            elif oid in yanked_roots:
+                is_yanked = True
+                
+            if is_yanked:
+                yanked_ids.add(oid)
+                if oid not in unassigned_ids:
+                    unassigned_ids.append(oid)
+                if oid in mo_map:
+                    route.total_m3 = max(0.0, route.total_m3 - mo_map[oid].m3)
+                    route.total_kg = max(0.0, route.total_kg - mo_map[oid].kg)
+            else:
+                new_route.append(oid)
+        
+        route.route = new_route
+        
+    if yanked_ids:
+        log.info("Yanker removed %d sibling split parts belonging to %d roots.", len(yanked_ids), len(yanked_roots))
+        
+    return assigned_routes, unassigned_ids, yanked_roots
+
+
+def _dissolve_low_epe_routes(
     assigned_routes: list[AssignedRouteOut],
     vehicles: list[VehicleIn],
-    outlets: list[OutletIn],
     min_epe_threshold: float,
-    unassigned_pool: list[str] | None = None,
 ) -> tuple[list[AssignedRouteOut], list[str], int, set[str]]:
     """
-    Cancel routes where max(m3_util, kg_util) < min_epe_threshold.
-    Returns (filtered_routes, unassigned_outlet_ids, pruned_count, pruned_outlet_ids).
+    If EPE is strictly < min_epe_threshold and distance > 0: dissolve the route.
+    Move its stops to unassigned_outlets.
+    Returns (retained_routes, new_unassigned_ids, dissolved_route_count, dissolved_outlet_ids)
     """
     if min_epe_threshold <= 0.0:
-        served_ids = {oid for r in assigned_routes for oid in r.route}
-        if unassigned_pool is not None:
-            unassigned = [oid for oid in unassigned_pool if oid not in served_ids]
-        else:
-            unassigned = [o.id for o in outlets if o.id not in served_ids]
-        return assigned_routes, unassigned, 0, set()
+        return assigned_routes, [], 0, set()
 
     vehicle_map = {v.id: v for v in vehicles}
-    filtered_routes: list[AssignedRouteOut] = []
-    pruned_outlet_ids: set[str] = set()
-    pruned_count = 0
+    retained_routes = []
+    dissolved_unassigned_ids = []
+    dissolved_count = 0
+    dissolved_outlet_ids = set()
 
     for r in assigned_routes:
         veh = vehicle_map.get(r.vehicle_id)
         if not veh:
-            filtered_routes.append(r)
+            retained_routes.append(r)
             continue
 
         m3_util = (r.total_m3 / veh.max_m3) if veh.max_m3 > 0 else 0.0
         kg_util = (r.total_kg / veh.max_kg) if veh.max_kg > 0 else 0.0
         epe = max(m3_util, kg_util)
 
-        if epe >= min_epe_threshold:
-            filtered_routes.append(r)
+        if epe < min_epe_threshold and r.total_distance_km > 0:
+            dissolved_count += 1
+            dissolved_outlet_ids.update(r.route)
+            dissolved_unassigned_ids.extend(r.route)
+            log.info("Kill Switch: Route %s EPE %.2f%% < %.2f%%, dissolving.", r.vehicle_id, epe*100, min_epe_threshold*100)
         else:
-            pruned_count += 1
-            pruned_outlet_ids.update(r.route)
-            log.info(
-                "Pruning low-EPE route: vehicle %s (%s) had EPE %.2f%% (< %.2f%%) with %d outlets (m3=%.3f, kg=%.1f)",
-                r.vehicle_id, veh.jns_kend, epe * 100, min_epe_threshold * 100, len(r.route), r.total_m3, r.total_kg
-            )
+            retained_routes.append(r)
 
-    served_ids = {oid for r in filtered_routes for oid in r.route}
-    if unassigned_pool is not None:
-        unassigned = [oid for oid in unassigned_pool if oid not in served_ids]
-        for pid in pruned_outlet_ids:
-            if pid not in unassigned:
-                unassigned.append(pid)
-    else:
-        unassigned = [o.id for o in outlets if o.id not in served_ids]
-
-    return filtered_routes, unassigned, pruned_count, pruned_outlet_ids
+    return retained_routes, dissolved_unassigned_ids, dissolved_count, dissolved_outlet_ids
 
 
 def solve_cvrp(
@@ -434,7 +471,7 @@ def solve_cvrp(
     max_stops: int = 40,
     min_epe_threshold: float = 0.0,
     progress_cb: Any = None,
-) -> tuple[list[AssignedRouteOut], list[str], int, set[str], list[OutletIn], dict[str, list[OutletIn]]]:
+) -> tuple[list[AssignedRouteOut], list[str], int, dict[str, str], list[OutletIn], dict[str, list[OutletIn]]]:
     """
     Solve the full multi-vehicle CVRP globally with:
       • Hybrid arc cost (d + d²/100) → ultra-aggressive petal-shaped routes
@@ -656,16 +693,26 @@ def solve_cvrp(
         original_id_to_idx={o.id: i + 1 for i, o in enumerate(outlets)},
     )
 
-    # ── Filter out routes with low EPE if min_epe_threshold > 0 ──────
-    assigned_routes, unassigned, pruned_count, pruned_ids = _filter_low_epe_routes(
-        assigned_routes, vehicles, outlets, min_epe_threshold
+    # ── Min EPE Pruning (Kill Switch) ──────
+    assigned_routes, kill_switched_unassigned, pruned_count, kill_switched_ids = _dissolve_low_epe_routes(
+        assigned_routes, vehicles, min_epe_threshold
     )
+    for k_id in kill_switched_unassigned:
+        if k_id not in unassigned:
+            unassigned.append(k_id)
+
+    # ── Prepare Drop Reasons ──────────────────────────────────────────
+    drop_reasons: dict[str, str] = {}
+    pct = int(min_epe_threshold * 100) if min_epe_threshold > 0 else 40
+    for uid in unassigned:
+        if uid in kill_switched_ids:
+            drop_reasons[uid] = f"Rute dibatalkan sistem: Utilisasi EPE di bawah batas minimum ({pct}%)."
 
     log.info(
         "Solution: %d routes (%d pruned), %d served, %d unassigned",
         len(assigned_routes), pruned_count, len(outlets) - len(unassigned), len(unassigned),
     )
-    return assigned_routes, unassigned, pruned_count, pruned_ids, [], {}
+    return assigned_routes, unassigned, pruned_count, drop_reasons, [], {}
 
 
 # ---------------------------------------------------------------------------
@@ -1713,6 +1760,7 @@ def _cross_district_sweeper(
     raw_durations: list[list[float]],
     original_id_to_idx: dict[str, int],
     expansion_map: dict[str, list[OutletIn]],
+    blocked_unassigned_ids: set[str] = None,
     max_detour_s: int = 1200,
     max_stops: int = 50,
 ) -> tuple[list[AssignedRouteOut], list[str]]:
@@ -1735,8 +1783,15 @@ def _cross_district_sweeper(
             return original_id_to_idx.get(first_m.id, 1)
         return 1
 
+    if blocked_unassigned_ids is None:
+        blocked_unassigned_ids = set()
+
     remaining_unassigned = []
     for u_id in unassigned_ids:
+        if u_id in blocked_unassigned_ids:
+            remaining_unassigned.append(u_id)
+            continue
+            
         u_node = mo_map.get(u_id)
         if not u_node:
             remaining_unassigned.append(u_id)
@@ -1823,7 +1878,7 @@ def solve_cvrp_matrix(
     max_grouppayer: int = 50,
     min_epe_threshold: float = 0.0,
     progress_cb: Any = None,
-) -> tuple[list[AssignedRouteOut], list[str], int, set[str], list[OutletIn], dict[str, list[OutletIn]]]:
+) -> tuple[list[AssignedRouteOut], list[str], int, dict[str, str], list[OutletIn], dict[str, list[OutletIn]]]:
     """
     Solve the CVRP with Matrix ERP operational constraints applied using
     Per-District / Zone Partitioning Architecture with a 3-Tier Fallback System:
@@ -2067,9 +2122,28 @@ def solve_cvrp_matrix(
                 pct = 45 + int((unknown_idx / total_phases) * 40)
                 progress_cb("ZONE", pct, f"ZONE_UNKNOWN: No float vehicles available -> {len(unknown_outlets)} outlets queued for Sweeper")
 
-    # ── Tier 3 / Phase C: Phase 2 Post-Processing Cross-District Sweeper ─
+    # ── Tier 3 / Phase C1: Enforce All-or-Nothing Splits (Yanker) ────────
+    if progress_cb:
+        progress_cb("YANKER", 85, f"Scanning for orphaned invoice splits to yank...")
+    all_assigned_routes, all_unassigned_outlets, yanked_roots = _enforce_all_or_nothing_splits(
+        assigned_routes=all_assigned_routes,
+        unassigned_ids=all_unassigned_outlets,
+        merged_outlets=merged_outlets
+    )
+
+    # ── Tier 3 / Phase C2: Phase 2 Post-Processing Cross-District Sweeper ─
     if progress_cb:
         progress_cb("SWEEPER", 86, f"Running Cross-District Sweeper on {len(all_unassigned_outlets)} unassigned outlets...")
+    
+    # We must prevent Sweeper from picking up yanked invoice parts
+    blocked_sweeper_ids = set()
+    for uid in all_unassigned_outlets:
+        m = re.match(r"^(.*)_SPLIT_\d+$", uid)
+        root = m.group(1) if m else uid
+        if root in yanked_roots:
+            blocked_sweeper_ids.add(uid)
+
+    # Note: _cross_district_sweeper signature will be updated to accept blocked_unassigned_ids
     all_assigned_routes, all_unassigned_outlets = _cross_district_sweeper(
         assigned_routes=all_assigned_routes,
         unassigned_ids=all_unassigned_outlets,
@@ -2078,23 +2152,13 @@ def solve_cvrp_matrix(
         raw_durations=raw_durations,
         original_id_to_idx=original_id_to_idx,
         expansion_map=expansion_map,
+        blocked_unassigned_ids=blocked_sweeper_ids,
         max_detour_s=1200,
         max_stops=max_stops,
     )
 
     # ── Step 4: Expand grouppayer super-nodes back to individual outlet IDs ─
     all_assigned_routes = _expand_routes(all_assigned_routes, expansion_map)
-
-    # ── Step 4.5: Auto-TSP Polisher on expanded routes ────────────────
-    if progress_cb:
-        progress_cb("POLISH", 87, f"Auto-TSP Polisher: Re-sequencing {len(all_assigned_routes)} routes into natural loops...")
-    all_assigned_routes = _polish_assigned_routes(
-        assigned_routes=all_assigned_routes,
-        outlets=outlets,
-        raw_durations=raw_durations,
-        raw_distances=raw_distances,
-        original_id_to_idx=original_id_to_idx,
-    )
 
     # Expand unassigned super-nodes/split-nodes back to member IDs
     expanded_unassigned: list[str] = []
@@ -2107,28 +2171,61 @@ def solve_cvrp_matrix(
             if oid not in expanded_unassigned:
                 expanded_unassigned.append(oid)
 
-    # ── Step 5: Min EPE Pruning on aggregated routes ───────────────────
+    # ── Step 4.5: Min EPE Pruning (Kill Switch) ───────────────────
     if progress_cb and min_epe_threshold > 0:
         progress_cb(
             "PRUNE",
             88,
             f"Evaluating fleet utilization against Min EPE threshold (≥ {int(min_epe_threshold*100)}%)...",
         )
-    all_assigned_routes, final_unassigned, pruned_count, pruned_ids = _filter_low_epe_routes(
-        all_assigned_routes, vehicles, outlets, min_epe_threshold, unassigned_pool=expanded_unassigned
+    all_assigned_routes, kill_switched_unassigned, pruned_count, kill_switched_ids = _dissolve_low_epe_routes(
+        assigned_routes=all_assigned_routes,
+        vehicles=vehicles,
+        min_epe_threshold=min_epe_threshold,
     )
+    for k_id in kill_switched_unassigned:
+        if k_id not in expanded_unassigned:
+            expanded_unassigned.append(k_id)
+
+    # ── Step 5: Auto-TSP Polisher on expanded routes ────────────────
+    if progress_cb:
+        progress_cb("POLISH", 89, f"Auto-TSP Polisher: Re-sequencing {len(all_assigned_routes)} routes into natural loops...")
+    all_assigned_routes = _polish_assigned_routes(
+        assigned_routes=all_assigned_routes,
+        outlets=outlets,
+        raw_durations=raw_durations,
+        raw_distances=raw_distances,
+        original_id_to_idx=original_id_to_idx,
+    )
+
     if progress_cb and min_epe_threshold > 0:
         progress_cb(
             "PRUNE",
             90,
-            f"Pruning complete: {len(all_assigned_routes)} routes active, {pruned_count} routes pooled for Ritase 2",
+            f"Pipeline complete: {len(all_assigned_routes)} routes active, {pruned_count} routes dissolved",
         )
 
+    # ── Prepare Drop Reasons ──────────────────────────────────────────
+    drop_reasons: dict[str, str] = {}
+    pct = int(min_epe_threshold * 100) if min_epe_threshold > 0 else 40
+    for uid in expanded_unassigned:
+        if uid in kill_switched_ids:
+            drop_reasons[uid] = f"Rute dibatalkan sistem: Utilisasi EPE di bawah batas minimum ({pct}%)."
+        else:
+            # Check if it was yanked
+            is_yanked = False
+            for root in yanked_roots:
+                if uid == root or uid.startswith(root + "_SPLIT_"):
+                    is_yanked = True
+                    break
+            if is_yanked:
+                drop_reasons[uid] = "Pengiriman Split Dibatalkan (Ada bagian faktur yang gagal muat)"
+
     log.info(
-        "Solution (Matrix Partitioned): %d routes (%d pruned), %d served, %d unassigned",
-        len(all_assigned_routes), pruned_count, len(outlets) - len(final_unassigned), len(final_unassigned),
+        "Solution (Matrix Partitioned): %d routes (%d dissolved), %d served, %d unassigned",
+        len(all_assigned_routes), pruned_count, len(outlets) - len(expanded_unassigned), len(expanded_unassigned),
     )
-    return all_assigned_routes, final_unassigned, pruned_count, pruned_ids, split_outlets, expansion_map
+    return all_assigned_routes, expanded_unassigned, pruned_count, drop_reasons, split_outlets, expansion_map
 
 
 # ---------------------------------------------------------------------------
@@ -2245,7 +2342,7 @@ def build_cvrp_excel_bytes(
 
         fleet_rows.append({
             "No Recap": route.recap_no or "-",
-            "Plat Nomor (carno)": route.vehicle_id,
+            "Plat Nomor (carno)": re.sub(r"\s*\(Trip\s*\d+\)", "", route.vehicle_id, flags=re.IGNORECASE).strip(),
             "Jenis Kendaraan (jns_kend)": jns_kend,
             "Zone Kendaraan": zone_str,
             "Ritase / Trip": ritase,
@@ -2292,7 +2389,7 @@ def build_cvrp_excel_bytes(
                 for inv in outlet.invoices:
                     invoice_rows.append({
                         "No Recap": recap_no_str,
-                        "Plat Nomor": route.vehicle_id,
+                        "Plat Nomor": re.sub(r"\s*\(Trip\s*\d+\)", "", route.vehicle_id, flags=re.IGNORECASE).strip(),
                         "No Faktur": inv.invno,
                         "Kode Outlet": clean_custno,
                         "Nama Outlet": clean_custname,
@@ -2312,7 +2409,7 @@ def build_cvrp_excel_bytes(
             else:
                 invoice_rows.append({
                     "No Recap": recap_no_str,
-                    "Plat Nomor": route.vehicle_id,
+                    "Plat Nomor": re.sub(r"\s*\(Trip\s*\d+\)", "", route.vehicle_id, flags=re.IGNORECASE).strip(),
                     "No Faktur": clean_custno,
                     "Kode Outlet": clean_custno,
                     "Nama Outlet": clean_custname,
@@ -2348,21 +2445,21 @@ def build_cvrp_excel_bytes(
         if outlet is None:
             continue
 
-        if outlet_id in pruned_set:
-            pct = int(getattr(request_payload, "min_epe_threshold", 0.0) * 100)
-            reason = f"Pruned: Vehicle EPE < {pct}% (Pooled for Next Trip)"
+        drop_reasons = getattr(response_data, "drop_reasons", {})
+        if outlet_id in drop_reasons:
+            reason = drop_reasons[outlet_id]
         elif max_fleet_m3 > 0 and outlet.m3 > max_fleet_m3 * 3:
-            reason = "EXCEEDS_3X_MAX_CAPACITY (DUMMY SO)"
+            reason = "Pesanan Ditolak: Volume melebihi 3x kapasitas maksimal armada (Dummy SO)"
         elif max_fleet_kg > 0 and outlet.kg > max_fleet_kg * 3:
-            reason = "EXCEEDS_3X_MAX_CAPACITY (DUMMY SO)"
+            reason = "Pesanan Ditolak: Berat melebihi 3x kapasitas maksimal armada (Dummy SO)"
         elif max_fleet_m3 > 0 and outlet.m3 > max_fleet_m3:
-            reason = f"Capacity Exceeded (M3: {outlet.m3:.3f} > Fleet Max: {max_fleet_m3:.3f})"
+            reason = f"Kapasitas Armada Cabang Penuh (M3: {outlet.m3:.3f} > Max: {max_fleet_m3:.3f})"
         elif max_fleet_kg > 0 and outlet.kg > max_fleet_kg:
-            reason = f"Capacity Exceeded (KG: {outlet.kg:.1f} > Fleet Max: {max_fleet_kg:.1f})"
+            reason = f"Kapasitas Armada Cabang Penuh (KG: {outlet.kg:.1f} > Max: {max_fleet_kg:.1f})"
         elif outlet.allowed_vehicles or (outlet.jns_kend and outlet.jns_kend.upper() == "MOTOR"):
-            reason = f"Vehicle Restriction (Requires {outlet.jns_kend or outlet.allowed_vehicles})"
+            reason = f"Akses Kendaraan Ditolak (Membutuhkan {outlet.jns_kend or outlet.allowed_vehicles})"
         else:
-            reason = "Capacity Exceeded / Time Limit / Feasible cluster not reachable"
+            reason = "Melebihi Batas Waktu Operasional / Rute Tidak Efisien"
 
         clean_custno = outlet_id
         clean_custname = outlet.custname or outlet_id
