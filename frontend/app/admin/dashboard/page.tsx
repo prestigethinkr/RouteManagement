@@ -620,7 +620,11 @@ export default function FleetDispatchPage() {
         try {
           const parsed = JSON.parse(trimmed.slice(6));
           if (parsed.type === "log") {
-            onProgress(parsed.stage, parsed.percent, parsed);
+            const clientLog: SolverLogItem = {
+              ...parsed,
+              time: new Date().toLocaleTimeString("it-IT"),
+            };
+            onProgress(clientLog.stage, clientLog.percent, clientLog);
           } else if (parsed.type === "result") {
             optimizedData = parsed.data;
           } else if (parsed.type === "error") {
@@ -1633,7 +1637,7 @@ export default function FleetDispatchPage() {
                   <Terminal className="h-4 w-4 text-blue-600" />
                   <span className="font-semibold text-slate-700">Log Proses</span>
                   <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-500 font-mono border border-slate-200">
-                    {solverLogs.length} pesan
+                    {solverLogs.length} log
                   </span>
                 </div>
               </div>

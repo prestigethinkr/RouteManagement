@@ -29,9 +29,11 @@ import logging
 import math
 import os
 import random
-import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any
+
+# Indonesian Western Standard Time (WIB / UTC+7) for consistent operational logs
+WIB = timezone(timedelta(hours=7))
 
 import pandas as pd
 
@@ -315,14 +317,14 @@ async def fetch_duration_matrix(
 
     get_url = f"{OSRM_BASE}/table/v1/driving/{coord_str}?annotations=duration,distance"
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] [OSRM] Sending table request for {len(coord_parts)} coordinates...", flush=True)
+    print(f"[{datetime.now(WIB).strftime('%H:%M:%S')}] [OSRM] Sending table request for {len(coord_parts)} coordinates...", flush=True)
     async with httpx.AsyncClient(timeout=180.0) as client:
         if len(get_url) <= 4000:
             resp = await client.get(get_url)
         else:
             # GET with query params for large coordinate sets (1000+ nodes)
             print(
-                f"[{datetime.now().strftime('%H:%M:%S')}] [OSRM] URL length {len(get_url)} exceeds threshold — using GET with params for {len(coord_parts)} coords",
+                f"[{datetime.now(WIB).strftime('%H:%M:%S')}] [OSRM] URL length {len(get_url)} exceeds threshold — using GET with params for {len(coord_parts)} coords",
                 flush=True,
             )
             resp = await client.get(
@@ -345,7 +347,7 @@ async def fetch_duration_matrix(
 
     durations: list[list[float]] = data["durations"]
     distances: list[list[float]] = data["distances"]
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] [OSRM] Matrix loaded: {len(durations)}x{len(durations[0])} nodes", flush=True)
+    print(f"[{datetime.now(WIB).strftime('%H:%M:%S')}] [OSRM] Matrix loaded: {len(durations)}x{len(durations[0])} nodes", flush=True)
     return durations, distances
 
 
@@ -2533,7 +2535,7 @@ def build_cvrp_excel_bytes(
         ws.cell(row=meta_row + 2, column=1, value="Execution Time (sec)")
         ws.cell(row=meta_row + 2, column=2, value=round(execution_time_seconds, 3))
         ws.cell(row=meta_row + 3, column=1, value="Timestamp")
-        ws.cell(row=meta_row + 3, column=2, value=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        ws.cell(row=meta_row + 3, column=2, value=datetime.now(WIB).strftime("%Y-%m-%d %H:%M:%S"))
         ws.cell(row=meta_row + 4, column=1, value="Total Vehicles Used")
         ws.cell(row=meta_row + 4, column=2, value=len(df_fleet))
         ws.cell(row=meta_row + 5, column=1, value="Total Outlets Served")
@@ -2543,7 +2545,7 @@ def build_cvrp_excel_bytes(
 
     excel_bytes = output_io.getvalue()
     max_rit = max((_detect_ritase(r.vehicle_id) for r in response_data.assigned_routes), default=1)
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp_str = datetime.now(WIB).strftime("%Y%m%d_%H%M%S")
     filename = f"CVRP_Log_Run_{timestamp_str}_Ritase{max_rit}.xlsx"
 
     return excel_bytes, filename
@@ -2675,7 +2677,7 @@ async def optimize(payload: OptimizeRequest):
             _t0 = time.monotonic()
 
             def push_progress(stage: str, percent: int, message: str, level: str = "INFO"):
-                now_str = datetime.now().strftime("%H:%M:%S")
+                now_str = datetime.now(WIB).strftime("%H:%M:%S")
                 print(f"[{now_str}] [{stage:<6}] [{percent:3d}%] {message}", flush=True)
                 data = {
                     "type": "log",
