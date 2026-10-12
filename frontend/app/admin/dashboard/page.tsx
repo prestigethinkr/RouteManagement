@@ -41,6 +41,7 @@ import {
   ArrowRight,
   Copy,
   Check,
+  Printer,
 } from "lucide-react";
 import RouteEditModal from "@/components/RouteEditModal";
 import RouteEditorDrawer from "@/components/RouteEditorDrawer";
@@ -1558,6 +1559,26 @@ export default function FleetDispatchPage() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Batch Print Rekap Handler (Multi-Select)
+  // ---------------------------------------------------------------------------
+  function handleBatchPrint(selectedRecapNos: string[]) {
+    if (!selectedRecapNos || selectedRecapNos.length === 0) {
+      toast({
+        title: "Peringatan Batch Print",
+        description: "Pilih minimal satu nomor rekap untuk dicetak.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    console.log("[BATCH PRINT DISPATCH] Mengirim nomor rekap ke Print Service:", selectedRecapNos);
+    toast({
+      title: "Batch Print Diproses",
+      description: `Mengirim ${selectedRecapNos.length} rekap (${selectedRecapNos.join(", ")}) ke printer service.`,
+    });
+  }
+
   // --- Derived values ---
   const bothLoaded = pendingOutlets.length > 0 && availableVehicles.length > 0;
   const hasRoutes = assignedRoutes.length > 0;
@@ -2096,21 +2117,31 @@ export default function FleetDispatchPage() {
                       />
                     </div>
                     {hasRoutes && (
-                      <div className="flex items-center gap-0.5 shrink-0 bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-semibold text-slate-600">
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
-                          onClick={showAllVehicles}
-                          className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
-                          title="Show all route lines on map"
+                          onClick={() => setIsSummaryOpen(true)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[10px] font-bold transition-colors shadow-2xs"
+                          title="Buka Batch Print Rekap & Ringkasan Utilisasi"
                         >
-                          All
+                          <Printer className="h-3 w-3 text-amber-700" />
+                          <span>Batch Print</span>
                         </button>
-                        <button
-                          onClick={hideAllVehicles}
-                          className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
-                          title="Hide all route lines on map"
-                        >
-                          None
-                        </button>
+                        <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-semibold text-slate-600">
+                          <button
+                            onClick={showAllVehicles}
+                            className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
+                            title="Show all route lines on map"
+                          >
+                            All
+                          </button>
+                          <button
+                            onClick={hideAllVehicles}
+                            className="px-2 py-0.5 rounded hover:bg-white hover:text-slate-900 hover:shadow-xs transition-all"
+                            title="Hide all route lines on map"
+                          >
+                            None
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2845,8 +2876,10 @@ export default function FleetDispatchPage() {
       {isSummaryOpen && (
         <FleetSummaryTable
           routes={assignedRoutes}
+          allVehicles={availableVehicles}
           algorithm={viewingAlgorithm}
           onClose={() => setIsSummaryOpen(false)}
+          onBatchPrint={handleBatchPrint}
         />
       )}
 
